@@ -181,6 +181,13 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
   assertCanAssignRole(auth, body.role);
 
   const existing = (await membershipsForEmail(body.email)).find((m) => m.tenant.id === auth.tenant.id);
+  if (existing?.seat_status === 'deactivated') {
+    throw new HttpError(
+      409,
+      'MEMBER_DEACTIVATED',
+      'This seat is deactivated. Ask your admin to reactivate it.'
+    );
+  }
   if (existing && (existing.seat_status === 'active' || existing.seat_status === 'invited')) {
     throw new HttpError(409, 'ALREADY_MEMBER', 'This person already has a seat');
   }
@@ -243,7 +250,7 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
   const expiresAt = new Date(Date.now() + inviteTtlMs());
   let email = '';
 
-  const seats = await withTenant(auth.tenant.id, async (client) => {
+  const outcome = await withTenant(auth.tenant.id, async (client) => {
     const usage = await snapshot(client, auth.tenant.id, true);
     const found = await client.query<{
       id: string;
@@ -271,8 +278,22 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
     const existingMember = (await membershipsForEmail(invite.email)).find(
       (m) => m.tenant.id === auth.tenant.id
     );
-    if (existingMember?.seat_status === 'active') {
-      throw new HttpError(409, 'ALREADY_MEMBER', 'This person already has a seat');
+    if (existingMember?.seat_status === 'active' || existingMember?.seat_status === 'deactivated') {
+      await client.query(
+        `UPDATE invites
+            SET revoked_at = clock_timestamp()
+          WHERE id = $1 AND tenant_id = $2
+            AND accepted_at IS NULL AND revoked_at IS NULL`,
+        [inviteId, auth.tenant.id]
+      );
+      return {
+        kind: 'rejected' as const,
+        code: existingMember.seat_status === 'deactivated' ? 'MEMBER_DEACTIVATED' : 'ALREADY_MEMBER',
+        message:
+          existingMember.seat_status === 'deactivated'
+            ? 'This seat is deactivated. Ask your admin to reactivate it.'
+            : 'This person already has a seat',
+      };
     }
     const currentlyCounted = new Date(invite.expires_at).getTime() > Date.now();
     if (currentlyCounted) {
@@ -312,10 +333,13 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
       target: invite.id,
       meta: { email: invite.email, role: invite.role },
     });
-    return loadDirectory(client, auth.tenant.id, true);
+    return { kind: 'ok' as const, seats: await loadDirectory(client, auth.tenant.id, true) };
   });
 
-  return seats;
+  if (outcome.kind === 'rejected') {
+    throw new HttpError(409, outcome.code, outcome.message);
+  }
+  return outcome.seats;
 }
 
 export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<SeatsResponse> {
