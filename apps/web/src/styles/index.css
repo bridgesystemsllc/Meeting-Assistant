@@ -1,24 +1,63 @@
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-sans/600.css';
+@import '@fontsource/geist-sans/700.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
 @import 'tailwindcss';
 
 :root {
-  --color-primary: #6366f1;
-  --color-primary-hover: #4f46e5;
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+  --color-bg: #f4f4f1;
+  --color-surface: #ffffff;
+  --color-fg: #1c1c19;
+  --color-muted: #5f5f58;
+  --color-border: #e2e2dc;
+  --color-accent: #1c1c19;
+  --color-danger: #b42318;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-weight: 400;
 }
 
 body {
   @apply antialiased;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+.font-mono,
+code,
+pre {
+  font-family: var(--font-mono);
 }
 
 .btn-primary {
-  @apply bg-indigo-600 text-white px-4 py-2 rounded-lg font-medium 
-         hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  @apply inline-flex h-9 items-center rounded-md px-3 text-sm font-medium;
+  background: var(--color-fg);
+  color: var(--color-surface);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+.btn-primary:disabled {
+  @apply cursor-not-allowed opacity-50;
 }
 
 .btn-secondary {
-  @apply bg-gray-800 text-gray-100 px-4 py-2 rounded-lg font-medium 
-         hover:bg-gray-700 transition-colors border border-gray-700;
+  @apply inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-fg);
 }
 
 .card {
-  @apply bg-gray-900 rounded-xl border border-gray-800;
+  @apply rounded-md border;
+  background: var(--color-surface);
+  border-color: var(--color-border);
 }

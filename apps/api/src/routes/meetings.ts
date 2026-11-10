@@ -4,8 +4,9 @@
  */
 
 import { Router } from 'express';
-import { db } from '../lib/db.js';
+import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
+import { unauthenticated } from '../lib/http-error.js';
 
 export const meetingsRouter = Router();
 
@@ -15,9 +16,15 @@ export const meetingsRouter = Router();
  */
 meetingsRouter.get('/', async (req, res) => {
   const { limit = '20', offset = '0' } = req.query;
+  const tenantId = req.auth?.tenant.id;
+  if (!tenantId) {
+    unauthenticated(res);
+    return;
+  }
 
   try {
-    const result = await db.query(
+    const result = await withTenant(tenantId, (client) =>
+      client.query(
       `SELECT 
          m.id, m.title, m.platform, m.status, m.started_at, m.ended_at,
          m.duration_seconds, m.language, m.created_at,
@@ -25,9 +32,11 @@ meetingsRouter.get('/', async (req, res) => {
          COALESCE(jsonb_array_length(ma.action_items), 0) as action_item_count
        FROM meetings m
        LEFT JOIN meeting_analysis ma ON ma.meeting_id = m.id
+       WHERE m.tenant_id = $3
        ORDER BY m.created_at DESC
        LIMIT $1 OFFSET $2`,
-      [parseInt(limit as string), parseInt(offset as string)]
+      [parseInt(limit as string), parseInt(offset as string), tenantId]
+      )
     );
 
     res.json({
@@ -46,30 +55,37 @@ meetingsRouter.get('/', async (req, res) => {
  */
 meetingsRouter.get('/:id', async (req, res) => {
   const { id } = req.params;
+  const tenantId = req.auth?.tenant.id;
+  if (!tenantId) {
+    unauthenticated(res);
+    return;
+  }
 
   try {
-    const meetingResult = await db.query(
-      'SELECT * FROM meetings WHERE id = $1',
-      [id]
-    );
+    const loaded = await withTenant(tenantId, async (client) => {
+      const meetingResult = await client.query(
+        'SELECT * FROM meetings WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
+      if (meetingResult.rows.length === 0) {
+        return null;
+      }
+      const [transcriptResult, analysisResult] = await Promise.all([
+        client.query('SELECT * FROM transcripts WHERE meeting_id = $1 AND tenant_id = $2', [id, tenantId]),
+        client.query('SELECT * FROM meeting_analysis WHERE meeting_id = $1 AND tenant_id = $2', [id, tenantId]),
+      ]);
+      return {
+        meeting: meetingResult.rows[0],
+        transcript: transcriptResult.rows[0] as Record<string, unknown> | undefined,
+        analysis: analysisResult.rows[0] as Record<string, unknown> | undefined,
+      };
+    });
 
-    if (meetingResult.rows.length === 0) {
+    if (!loaded) {
       return res.status(404).json({ error: 'Meeting not found' });
     }
 
-    const transcriptResult = await db.query(
-      'SELECT * FROM transcripts WHERE meeting_id = $1',
-      [id]
-    );
-
-    const analysisResult = await db.query(
-      'SELECT * FROM meeting_analysis WHERE meeting_id = $1',
-      [id]
-    );
-
-    const meeting = meetingResult.rows[0];
-    const transcript = transcriptResult.rows[0] as Record<string, unknown> | undefined;
-    const analysis = analysisResult.rows[0] as Record<string, unknown> | undefined;
+    const { meeting, transcript, analysis } = loaded;
 
     res.json({
       meeting,
