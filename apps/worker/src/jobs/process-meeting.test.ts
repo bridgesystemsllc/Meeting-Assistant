@@ -270,9 +270,10 @@ describe('processMeeting', () => {
     expect(result.success).toBe(true);
     expect(sendRecapEmail).not.toHaveBeenCalled();
     // Check that email was recorded as not_sent
+    // Note: 'not_sent' is hardcoded in the query, not a parameter
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("status)"),
-      expect.arrayContaining([TENANT_A, MEETING_ID, MOCK_USER.email, 'not_sent'])
+      expect.stringContaining("'not_sent'"),
+      [TENANT_A, MEETING_ID, MOCK_USER.email]
     );
   });
 
