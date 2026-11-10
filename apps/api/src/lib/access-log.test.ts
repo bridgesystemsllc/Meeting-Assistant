@@ -25,7 +25,7 @@ describe('access log', () => {
   });
 
   it('redacts the live invite token in GET /api/v1/auth/invites/<token>', () => {
-    const rawToken = 'CZvtGq2sLp1iE-MYEYPm4Hp4fkndjCuwsKMATLzPc3Y';
+    const rawToken = 'test-invite-token-value';
     const tokens = {
       url: () => `/api/v1/auth/invites/${rawToken}`,
       'remote-addr': () => '127.0.0.1',
