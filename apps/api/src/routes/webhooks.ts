@@ -101,8 +101,8 @@ webhooksRouter.post('/recall', async (req, res) => {
           resolved.tenant_id,
         ]);
       });
-    } else if (resolved.code === 'TENANT_MISMATCH') {
-      logger.warn({ event: correlation.event }, 'Webhook tenant mismatch');
+    } else {
+      logger.warn({ event: correlation.event }, 'Webhook meeting not resolved');
     }
   }
 

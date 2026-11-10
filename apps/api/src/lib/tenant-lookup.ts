@@ -20,12 +20,16 @@ export interface FailedMeetingTenant {
 
 export type MeetingTenantResult = ResolvedMeetingTenant | FailedMeetingTenant;
 
+function notFoundMeetingTenant(): FailedMeetingTenant {
+  return { ok: false, code: 'NOT_FOUND' };
+}
+
 export async function resolveMeetingTenant(params: {
   recallBotId?: string | null;
   claimedTenantId?: string | null;
   claimedMeetingId?: string | null;
 }): Promise<MeetingTenantResult> {
-  const result = await db.query<{ resolve_meeting_tenant: MeetingTenantResult }>(
+  const result = await db.query<{ resolve_meeting_tenant: MeetingTenantResult | null }>(
     'SELECT resolve_meeting_tenant($1,$2,$3) AS resolve_meeting_tenant',
     [
       params.recallBotId ?? null,
@@ -33,7 +37,11 @@ export async function resolveMeetingTenant(params: {
       params.claimedMeetingId ?? null,
     ]
   );
-  return result.rows[0].resolve_meeting_tenant;
+  const row = result.rows[0]?.resolve_meeting_tenant;
+  if (!row || row.ok !== true) {
+    return notFoundMeetingTenant();
+  }
+  return { ok: true, tenant_id: row.tenant_id, meeting_id: row.meeting_id };
 }
 
 export async function webhookEventExists(
