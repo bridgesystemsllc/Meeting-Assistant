@@ -5,10 +5,16 @@ import type { AppRoleGuardRow } from './app-role.js';
 
 function restricted(overrides: Partial<AppRoleGuardRow> = {}): AppRoleGuardRow {
   return {
+    session_role: 'meeting_assistant_app',
+    current_role: 'meeting_assistant_app',
+    is_app_role: true,
     rolsuper: false,
     rolbypassrls: false,
     owns_public_relation: false,
-    has_unrestricted_rls_policy: false,
+    owns_security_definer: false,
+    member_of_table_owner: false,
+    has_definer_access: false,
+    has_nontenant_policy: false,
     ...overrides,
   };
 }
@@ -38,19 +44,77 @@ describe('assertNosuperuserNobypassrls', () => {
 });
 
 describe('assertRestrictedAppRole', () => {
-  it('accepts the restricted app role', () => {
+  it('accepts only meeting_assistant_app itself', () => {
     expect(() => assertRestrictedAppRole(restricted())).not.toThrow();
   });
 
-  it('refuses a NOSUPERUSER NOBYPASSRLS table owner', () => {
+  it('refuses a login that is not meeting_assistant_app', () => {
+    expect(() =>
+      assertRestrictedAppRole(
+        restricted({
+          session_role: 'ma_owner_inherit',
+          current_role: 'ma_owner_inherit',
+          is_app_role: false,
+        })
+      )
+    ).toThrow(/must connect as meeting_assistant_app/);
+  });
+
+  it('refuses a member of meeting_assistant_app that is not that role', () => {
+    expect(() =>
+      assertRestrictedAppRole(
+        restricted({
+          session_role: 'ma_app_member',
+          current_role: 'ma_app_member',
+          is_app_role: false,
+        })
+      )
+    ).toThrow(/members of that role are not allowed/);
+  });
+
+  it('refuses NOINHERIT + SET ROLE onto another role', () => {
+    expect(() =>
+      assertRestrictedAppRole(
+        restricted({
+          session_role: 'ma_owner_noinherit',
+          current_role: 'meeting_assistant_owner',
+          is_app_role: false,
+        })
+      )
+    ).toThrow(/must connect as meeting_assistant_app/);
+  });
+
+  it('refuses SUPERUSER even when the name is meeting_assistant_app', () => {
+    expect(() => assertRestrictedAppRole(restricted({ rolsuper: true }))).toThrow(/NOSUPERUSER/);
+  });
+
+  it('refuses a table owner', () => {
     expect(() => assertRestrictedAppRole(restricted({ owns_public_relation: true }))).toThrow(
-      /owns relations in public/
+      /must not own relations in public/
     );
   });
 
-  it('refuses a role granted definer_access or USING (true)', () => {
-    expect(() =>
-      assertRestrictedAppRole(restricted({ has_unrestricted_rls_policy: true }))
-    ).toThrow(/USING \(true\)/);
+  it('refuses SECURITY DEFINER ownership', () => {
+    expect(() => assertRestrictedAppRole(restricted({ owns_security_definer: true }))).toThrow(
+      /SECURITY DEFINER/
+    );
+  });
+
+  it('refuses membership of a table-owner role', () => {
+    expect(() => assertRestrictedAppRole(restricted({ member_of_table_owner: true }))).toThrow(
+      /table-owner/
+    );
+  });
+
+  it('refuses definer_access', () => {
+    expect(() => assertRestrictedAppRole(restricted({ has_definer_access: true }))).toThrow(
+      /definer_access/
+    );
+  });
+
+  it('refuses a policy that is not tenant-scoped', () => {
+    expect(() => assertRestrictedAppRole(restricted({ has_nontenant_policy: true }))).toThrow(
+      /tenant-scoped policies/
+    );
   });
 });
