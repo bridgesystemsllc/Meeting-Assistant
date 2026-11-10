@@ -1,0 +1,57 @@
+# PREP-only CI workflow
+# Lint and build only - no deploy steps, no secrets required
+# This is a draft workflow for SPEC-MA-PROD-V1 PREP phase
+
+name: PREP CI (lint/build only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/prep/**'
+      - '.github/workflows/prep-ci.yml'
+
+jobs:
+  lint-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check markdown files exist
+        run: |
+          test -f docs/prep/AUDIT.md
+          test -f docs/prep/BASELINE.md
+          test -f docs/prep/PLAN.md
+          test -f docs/prep/COST.md
+          
+      - name: Validate no secrets in docs
+        run: |
+          # Check for common secret patterns in docs
+          if grep -rE '(sk-[a-zA-Z0-9]{20,}|whsec_[a-zA-Z0-9]+|AKIA[A-Z0-9]{16})' docs/prep/; then
+            echo "ERROR: Potential secrets found in docs"
+            exit 1
+          fi
+          echo "No secrets detected in docs"
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+          
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+        
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+        
+      - name: Lint frontend (allow failure for PREP)
+        working-directory: frontend
+        run: npm run lint || echo "Lint errors exist - tracked in BASELINE.md"
