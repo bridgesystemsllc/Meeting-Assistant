@@ -3,7 +3,12 @@ import * as jose from 'jose';
 import type { OidcProvider } from '@meeting-assistant/shared';
 import { logger } from './logger.js';
 import { assertMicrosoftIssuer } from './oidc-issuer.js';
-import { isOidcEmailVerified } from './oidc-claims.js';
+import {
+  checkIdTokenIat,
+  isOidcEmailVerified,
+  oidcClockSkewSeconds,
+  oidcIdTokenMaxAgeSeconds,
+} from './oidc-claims.js';
 import { HttpError } from './http-error.js';
 import { publicBaseUrl } from './runtime-env.js';
 
@@ -191,6 +196,22 @@ export async function exchangeAuthorizationCode(params: {
   const claims = tokens.claims();
   if (!claims) {
     throw new HttpError(400, 'OIDC_FAILED', 'OIDC token missing claims');
+  }
+
+  const iatCheck = checkIdTokenIat(
+    claims.iat,
+    Math.floor(Date.now() / 1000),
+    oidcIdTokenMaxAgeSeconds(),
+    oidcClockSkewSeconds()
+  );
+  if (iatCheck !== 'ok') {
+    const message =
+      iatCheck === 'missing'
+        ? 'OIDC id_token missing iat'
+        : iatCheck === 'future'
+          ? 'OIDC id_token iat is in the future'
+          : 'OIDC id_token iat exceeds max age';
+    throw new HttpError(400, 'OIDC_FAILED', message);
   }
 
   if (params.provider === 'microsoft') {
