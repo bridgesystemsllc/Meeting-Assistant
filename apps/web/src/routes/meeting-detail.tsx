@@ -48,7 +48,7 @@ export function MeetingDetailPage() {
       if (!id) return;
       setLoadingState('loading');
       try {
-        const res = await fetch(`/api/meetings/${id}`);
+        const res = await fetch(`/api/v1/meetings/${id}`, { credentials: 'include' });
         if (!res.ok) {
           if (res.status === 404) {
             throw new Error('Meeting not found');
@@ -108,7 +108,7 @@ export function MeetingDetailPage() {
 
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white mb-2">{meeting.title}</h1>
+            <h1 className="mb-2 text-2xl font-semibold text-[var(--color-fg)]">{meeting.title}</h1>
             <div className="flex items-center gap-4 text-sm text-gray-400 flex-wrap">
               {meeting.started_at && (
                 <span className="flex items-center gap-1">
