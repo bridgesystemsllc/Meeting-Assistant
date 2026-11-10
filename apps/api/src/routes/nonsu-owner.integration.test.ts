@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import pg from 'pg';
-import { applyAuthEnv, startPostgresAsNonSuperOwner } from '../test/harness.js';
+import { applyAuthEnv, startPostgresManagedOwner } from '../test/harness.js';
 import { getOwnerPool, resetPools, withTenant } from '../lib/db.js';
 import { issueSession } from '../lib/session.js';
 import { SESSION_COOKIE_NAME } from '../lib/session-cookie.js';
@@ -17,7 +17,7 @@ describe('non-superuser non-BYPASSRLS owner', () => {
   let app: Express;
 
   beforeAll(async () => {
-    const pgStack = await startPostgresAsNonSuperOwner();
+    const pgStack = await startPostgresManagedOwner();
     container = pgStack.container;
     applyAuthEnv({
       ownerUrl: pgStack.ownerUrl,
@@ -64,7 +64,14 @@ describe('non-superuser non-BYPASSRLS owner', () => {
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relname = 'users'`
     );
-    expect(users.rows[0].force_rls).toBe(false);
+    expect(users.rows[0].force_rls).toBe(true);
+
+    const identities = await ownerQuery<{ force_rls: boolean }>(
+      `SELECT c.relforcerowsecurity AS force_rls
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'user_identities'`
+    );
+    expect(identities.rows[0].force_rls).toBe(true);
 
     const contact = await lookupUserContact(ACME_OWNER);
     expect(contact?.email).toBe('owner@example.com');

@@ -116,7 +116,9 @@ describe('RLS tenant isolation', () => {
     for (const row of tables.rows) {
       if (isGlobalTable(row.table_name)) {
         expect(row.rls, `${row.table_name} should ENABLE RLS`).toBe(true);
-        expect(row.force_rls, `${row.table_name} global must not FORCE RLS`).toBe(false);
+        expect(row.force_rls, `${row.table_name} global must FORCE RLS (004 definer policies)`).toBe(
+          true
+        );
         continue;
       }
       const col = await ownerQuery<{ is_nullable: string }>(

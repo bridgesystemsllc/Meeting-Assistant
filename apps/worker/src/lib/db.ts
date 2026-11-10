@@ -1,52 +1,38 @@
 /**
- * PostgreSQL pools for the worker. App role is NOBYPASSRLS.
+ * PostgreSQL pool for the worker. Uses the NOBYPASSRLS app role only.
  * All tenant-owned queries must run inside withTenant.
  */
 
 import pg from 'pg';
 import { logger } from './logger.js';
+import { appDatabaseUrl } from './env.js';
 
 const { Pool } = pg;
 
-function poolMax(): number {
-  return Number(process.env.PG_POOL_MAX ?? 10);
-}
+let pool: pg.Pool | undefined;
 
-function createPool(connectionString: string | undefined, name: string): pg.Pool {
-  const pool = new Pool({
-    connectionString,
-    max: poolMax(),
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
-  });
-  pool.on('error', (err) => {
-    logger.error({ err, pool: name }, 'Unexpected error on idle database client');
-  });
+function getPool(): pg.Pool {
+  if (!pool) {
+    pool = new Pool({
+      connectionString: appDatabaseUrl(),
+      max: 10,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5_000,
+    });
+    pool.on('error', (err) => {
+      logger.error({ err }, 'Unexpected error on idle database client');
+    });
+  }
   return pool;
 }
 
-let ownerPool: pg.Pool | undefined;
-let appPool: pg.Pool | undefined;
-
-export function getOwnerPool(): pg.Pool {
-  if (!ownerPool) {
-    ownerPool = createPool(process.env.DATABASE_URL, 'owner');
-  }
-  return ownerPool;
-}
-
 export function getAppPool(): pg.Pool {
-  if (!appPool) {
-    appPool = createPool(process.env.DATABASE_APP_URL || process.env.DATABASE_URL, 'app');
-  }
-  return appPool;
+  return getPool();
 }
 
 export async function resetPools(): Promise<void> {
-  const closing = [ownerPool?.end(), appPool?.end()];
-  ownerPool = undefined;
-  appPool = undefined;
-  await Promise.all(closing);
+  await pool?.end();
+  pool = undefined;
 }
 
 /**
@@ -57,7 +43,7 @@ export async function withTenant<T>(
   tenantId: string,
   fn: (client: pg.PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await getAppPool().connect();
+  const client = await getPool().connect();
   try {
     await client.query('BEGIN');
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
@@ -80,11 +66,36 @@ export const db = {
   query: async <T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
     params?: unknown[]
-  ): Promise<pg.QueryResult<T>> => getAppPool().query<T>(text, params),
+  ): Promise<pg.QueryResult<T>> => {
+    const start = Date.now();
+    try {
+      const result = await getPool().query<T>(text, params);
+      const duration = Date.now() - start;
+      logger.debug({ query: text.substring(0, 100), duration, rows: result.rowCount }, 'DB query executed');
+      return result;
+    } catch (err) {
+      logger.error({ query: text.substring(0, 100), err }, 'DB query error');
+      throw err;
+    }
+  },
 
-  getClient: async (): Promise<pg.PoolClient> => getAppPool().connect(),
+  getClient: async (): Promise<pg.PoolClient> => getPool().connect(),
 
   getAppPool,
-  getOwnerPool,
   withTenant,
+
+  transaction: async <T>(callback: (client: pg.PoolClient) => Promise<T>): Promise<T> => {
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      const result = await callback(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
 };

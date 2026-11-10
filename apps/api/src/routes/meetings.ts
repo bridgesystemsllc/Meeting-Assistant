@@ -9,28 +9,41 @@
  */
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { hasRequiredRole } from '@meeting-assistant/shared';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
-import { forbidden, notFound, unauthenticated } from '../lib/http-error.js';
+import { badRequest, forbidden, notFound, sendError, unauthenticated } from '../lib/http-error.js';
 import { recordAudit } from '../lib/audit.js';
 
 export const meetingsRouter = Router();
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UuidSchema = z.string().uuid();
+const MAX_LIMIT = 100;
 
-function requireTenantId(req: { auth?: { tenant: { id: string } } }): string | null {
-  return req.auth?.tenant.id ?? null;
+function parseLimitOffset(query: RequestQuery): { limit: number; offset: number } | null {
+  const rawLimit = query.limit === undefined ? 20 : Number(query.limit);
+  const rawOffset = query.offset === undefined ? 0 : Number(query.offset);
+  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
+    return null;
+  }
+  const limit = Math.min(MAX_LIMIT, Math.max(1, Math.trunc(rawLimit)));
+  const offset = Math.max(0, Math.trunc(rawOffset));
+  return { limit, offset };
 }
 
-/**
- * GET /api/v1/meetings
- */
+type RequestQuery = Record<string, unknown>;
+
 meetingsRouter.get('/', async (req, res) => {
-  const { limit = '20', offset = '0' } = req.query;
-  const tenantId = requireTenantId(req);
+  const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
+    return;
+  }
+
+  const page = parseLimitOffset(req.query as RequestQuery);
+  if (!page) {
+    badRequest(res, 'INVALID_LIMIT', 'limit and offset must be numbers');
     return;
   }
 
@@ -48,7 +61,7 @@ meetingsRouter.get('/', async (req, res) => {
          WHERE m.tenant_id = $1
          ORDER BY m.created_at DESC
          LIMIT $2 OFFSET $3`,
-        [tenantId, parseInt(limit as string, 10), parseInt(offset as string, 10)]
+        [tenantId, page.limit, page.offset]
       )
     );
 
@@ -58,23 +71,20 @@ meetingsRouter.get('/', async (req, res) => {
     });
   } catch (err) {
     logger.error({ err }, 'Failed to list meetings');
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to fetch meetings' } });
+    sendError(res, 500, 'INTERNAL', 'Failed to fetch meetings');
   }
 });
 
-/**
- * GET /api/v1/meetings/:id
- * Missing or cross-tenant → 404 NOT_FOUND.
- */
 meetingsRouter.get('/:id', async (req, res) => {
   const { id } = req.params;
-  const tenantId = requireTenantId(req);
+  const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
     return;
   }
-  if (!UUID_RE.test(id)) {
-    notFound(res, 'Meeting not found');
+
+  if (!UuidSchema.safeParse(id).success) {
+    badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 
@@ -141,7 +151,7 @@ meetingsRouter.get('/:id', async (req, res) => {
     });
   } catch (err) {
     logger.error({ err, id }, 'Failed to get meeting');
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to fetch meeting' } });
+    sendError(res, 500, 'INTERNAL', 'Failed to fetch meeting');
   }
 });
 
@@ -152,14 +162,14 @@ meetingsRouter.get('/:id', async (req, res) => {
  */
 meetingsRouter.delete('/:id', async (req, res) => {
   const { id } = req.params;
-  const tenantId = requireTenantId(req);
+  const tenantId = req.auth?.tenant.id;
   const actor = req.auth;
   if (!tenantId || !actor) {
     unauthenticated(res);
     return;
   }
-  if (!UUID_RE.test(id)) {
-    notFound(res, 'Meeting not found');
+  if (!UuidSchema.safeParse(id).success) {
+    badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 
@@ -199,6 +209,6 @@ meetingsRouter.delete('/:id', async (req, res) => {
     res.status(204).send();
   } catch (err) {
     logger.error({ err, id }, 'Failed to delete meeting');
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to delete meeting' } });
+    sendError(res, 500, 'INTERNAL', 'Failed to delete meeting');
   }
 });

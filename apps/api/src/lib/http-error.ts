@@ -29,6 +29,14 @@ export function forbidden(res: Response, message = 'Insufficient role'): Respons
   return sendError(res, 403, 'FORBIDDEN' satisfies AuthErrorCode, message);
 }
 
+export function seatInactive(res: Response, message = 'Seat is inactive'): Response {
+  return sendError(res, 403, 'SEAT_INACTIVE' satisfies AuthErrorCode, message);
+}
+
 export function notFound(res: Response, message = 'Not found'): Response {
   return sendError(res, 404, 'NOT_FOUND', message);
+}
+
+export function badRequest(res: Response, code: string, message: string): Response {
+  return sendError(res, 400, code, message);
 }

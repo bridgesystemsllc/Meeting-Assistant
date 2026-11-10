@@ -78,6 +78,22 @@ export type Invite = z.infer<typeof InviteSchema>;
 export type User = z.infer<typeof UserSchema>;
 
 /**
+ * OIDC identity (global table). Keyed on (issuer, subject), never email.
+ * Exempt from tenant_id (ATLAS Q4) — identities belong to users, not tenants.
+ */
+export const UserIdentitySchema = z.object({
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  issuer: z.string(),
+  subject: z.string(),
+  provider: z.enum(['google', 'microsoft']),
+  email: z.string().nullable(),
+  created_at: z.date(),
+});
+
+export type UserIdentity = z.infer<typeof UserIdentitySchema>;
+
+/**
  * Session entity (global table)
  */
 export const SessionSchema = z.object({

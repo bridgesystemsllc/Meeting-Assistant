@@ -1,8 +1,9 @@
 -- Migration: 20261110230000_composite_fks_rls_definer
 -- Description: Composite (tenant_id, meeting_id) FKs; unique (tenant_id, id)
 -- on meetings; scope tenant_isolation to the app role; owner/definer policy
--- so SECURITY DEFINER lookups work when the migrator is not BYPASSRLS;
--- drop FORCE on global tables (ENABLE stays). Minimize definer return columns.
+-- so SECURITY DEFINER lookups work when the migrator is not BYPASSRLS.
+-- Global tables keep ENABLE+FORCE; 004 auth_definer policies cover the owner.
+-- Minimize definer return columns.
 
 -- =============================================
 -- Composite FKs (FK checks bypass RLS; tenant must match parent)
@@ -77,26 +78,9 @@ BEGIN
   END LOOP;
 END $$;
 
--- Global tables: keep ENABLE (deny if the app role is ever granted) but do not
--- FORCE. FORCE with no policy blocks SECURITY DEFINER auth functions when the
--- migrator is a non-superuser, non-BYPASSRLS owner. App role stays REVOKEd.
-
-DO $$
-DECLARE
-  t text;
-BEGIN
-  FOREACH t IN ARRAY ARRAY[
-    'tenants',
-    'users',
-    'webhook_events',
-    'sessions',
-    'oidc_login_state'
-  ]
-  LOOP
-    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE %I NO FORCE ROW LEVEL SECURITY', t);
-  END LOOP;
-END $$;
+-- Global tables keep ENABLE + FORCE from 003/20100. 004's auth_definer
+-- policies (TO the migration owner) are what makes FORCE compatible with a
+-- NOSUPERUSER NOBYPASSRLS owner. Do not drop FORCE here. App role stays REVOKEd.
 
 -- =============================================
 -- Narrower SECURITY DEFINER return shapes

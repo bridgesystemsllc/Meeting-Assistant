@@ -4,14 +4,18 @@ import { OidcProviderSchema } from '@meeting-assistant/shared';
 import { hashToken } from '../lib/crypto.js';
 import { HttpError, sendError } from '../lib/http-error.js';
 import { logger } from '../lib/logger.js';
+import { resolveIdentity, consumeOidcState, storeOidcState } from '../lib/auth-db.js';
 import {
-  acceptInvite,
-  consumeOidcState,
-  membershipsForEmail,
-  storeOidcState,
-  upsertUser,
-} from '../lib/auth-db.js';
-import { buildAuthorizationRequest, exchangeAuthorizationCode, getProviderConfig } from '../lib/oidc.js';
+  buildAuthorizationRequest,
+  callbackUrlFromStored,
+  exchangeAuthorizationCode,
+  getProviderConfig,
+} from '../lib/oidc.js';
+import {
+  oidcStateCookieMatches,
+  serializeClearedOidcStateCookie,
+  serializeOidcStateCookie,
+} from '../lib/oidc-state-cookie.js';
 import { issueSession, readSessionToken, revokeSession } from '../lib/session.js';
 
 export const authRouter = Router();
@@ -29,6 +33,12 @@ function redirectToLogin(res: { redirect: (url: string) => void }, error: string
 function parseProvider(value: string): OidcProvider | null {
   const parsed = OidcProviderSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+function appendCookies(res: Response, values: string | string[]): void {
+  for (const value of Array.isArray(values) ? values : [values]) {
+    res.append('Set-Cookie', value);
+  }
 }
 
 authRouter.get('/login/:provider', async (req, res, next) => {
@@ -55,6 +65,7 @@ authRouter.get('/login/:provider', async (req, res, next) => {
       expiresAt: new Date(Date.now() + OIDC_STATE_TTL_MS),
     });
 
+    appendCookies(res, serializeOidcStateCookie(started.state));
     res.redirect(started.url.toString());
   } catch (err) {
     next(err);
@@ -71,6 +82,11 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 
     const state = typeof req.query.state === 'string' ? req.query.state : '';
     if (!state) {
+      sendError(res, 400, 'INVALID_STATE', 'OIDC state mismatch');
+      return;
+    }
+
+    if (!oidcStateCookieMatches(req.cookies, state)) {
       sendError(res, 400, 'INVALID_STATE', 'OIDC state mismatch');
       return;
     }
@@ -92,9 +108,13 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       return;
     }
 
-    const callbackUrl = new URL(
-      `${req.protocol}://${req.get('host')}${req.originalUrl}`
-    );
+    if (!stored.redirect_uri) {
+      sendError(res, 400, 'OIDC_FAILED', 'OIDC redirect_uri missing');
+      return;
+    }
+
+    const currentUrl = new URL(`http://127.0.0.1${req.originalUrl}`);
+    const callbackUrl = callbackUrlFromStored(stored.redirect_uri, currentUrl);
 
     let claims;
     try {
@@ -113,33 +133,52 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       throw err;
     }
 
-    const user = await upsertUser(claims.email, claims.name);
-    let memberships = await membershipsForEmail(user.email);
+    const resolved = await resolveIdentity({
+      issuer: claims.iss,
+      subject: claims.sub,
+      provider,
+      email: claims.email,
+      name: claims.name,
+      emailVerified: claims.emailVerified,
+      inviteTokenHash: stored.invite_token_hash,
+    });
 
-    if (stored.invite_token_hash) {
-      const accepted = await acceptInvite(stored.invite_token_hash, user.id, user.email);
-      if (accepted.ok) {
-        memberships = await membershipsForEmail(user.email);
-      } else if (memberships.filter((m) => m.seat_status === 'active').length === 0) {
-        logger.info({ code: accepted.code }, 'invite acceptance failed');
-        redirectToLogin(res, accepted.code === 'INVITE_EMAIL_MISMATCH' ? 'invite_email' : 'invalid_invite');
+    if (!resolved.ok || !resolved.user) {
+      const code = resolved.code ?? 'OIDC_FAILED';
+      if (code === 'EMAIL_UNVERIFIED') {
+        sendError(res, 400, 'EMAIL_UNVERIFIED', 'Email is not verified');
+        return;
+      }
+      sendError(res, 400, code, 'OIDC sign-in rejected');
+      return;
+    }
+
+    const memberships = resolved.memberships ?? [];
+    if (stored.invite_token_hash && resolved.invite && !resolved.invite.ok) {
+      if (memberships.filter((m) => m.seat_status === 'active').length === 0) {
+        logger.info({ code: resolved.invite.code }, 'invite acceptance failed');
+        redirectToLogin(
+          res,
+          resolved.invite.code === 'INVITE_EMAIL_MISMATCH' ? 'invite_email' : 'invalid_invite'
+        );
         return;
       }
     }
 
     const active = memberships.filter((m) => m.seat_status === 'active');
     if (active.length === 0) {
-      redirectToLogin(res, 'no_access');
+      redirectToLogin(res, memberships.length > 0 ? 'seat_inactive' : 'no_access');
       return;
     }
 
     const previous = readSessionToken(req.cookies);
     const session = await issueSession({
-      userId: user.id,
+      userId: resolved.user.id,
       activeTenantId: active[0].tenant.id,
       previousToken: previous,
     });
-    res.setHeader('Set-Cookie', session.setCookie);
+    appendCookies(res, serializeClearedOidcStateCookie());
+    appendCookies(res, session.setCookie);
     res.redirect(`${frontendUrl()}/meetings`);
   } catch (err) {
     next(err);
@@ -148,7 +187,8 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 
 async function handleLogout(req: Request, res: Response, wantsJson: boolean): Promise<void> {
   const cleared = await revokeSession(readSessionToken(req.cookies));
-  res.setHeader('Set-Cookie', cleared);
+  appendCookies(res, serializeClearedOidcStateCookie());
+  appendCookies(res, cleared);
   if (wantsJson) {
     res.json({ ok: true });
     return;
@@ -162,14 +202,6 @@ authRouter.post('/logout', async (req, res, next) => {
       req.headers.accept?.includes('application/json') ||
       req.headers['content-type']?.includes('json');
     await handleLogout(req, res, Boolean(wantsJson));
-  } catch (err) {
-    next(err);
-  }
-});
-
-authRouter.get('/logout', async (req, res, next) => {
-  try {
-    await handleLogout(req, res, false);
   } catch (err) {
     next(err);
   }

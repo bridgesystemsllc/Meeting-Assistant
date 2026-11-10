@@ -4,11 +4,17 @@
  *
  * ATLAS Q4: these global tables are exempt from tenant_id. The app role is
  * denied direct access; lookups go through narrow SECURITY DEFINER functions.
+ *
+ * `user_identities` is global (not tenant-exempt-with-tenant_id): it is keyed
+ * on (issuer, subject) like users/sessions. 003 ENABLE+FORCE RLS; 004 adds
+ * owner-only auth_definer policies so SECURITY DEFINER auth_* still works
+ * when the migrator is NOSUPERUSER NOBYPASSRLS.
  */
 
 export const GLOBAL_TABLES = [
   'tenants',
   'users',
+  'user_identities',
   'webhook_events',
   'sessions',
   'oidc_login_state',
