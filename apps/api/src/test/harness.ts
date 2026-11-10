@@ -5,10 +5,12 @@ import pg from 'pg';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { OAuth2Server } from 'oauth2-mock-server';
 
-const APP_PASSWORD = 'app-test-secret';
+export const APP_PASSWORD = 'app-test-secret';
+export const MANAGED_OWNER_PASSWORD = 'owner-test-secret';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, '../../../../db/migrations');
+const bootstrapRolesPath = path.resolve(here, '../../../../db/bootstrap-roles.sql');
 
 export interface TestStack {
   container: StartedPostgreSqlContainer;
@@ -16,6 +18,17 @@ export interface TestStack {
   appUrl: string;
   mockOidc: OAuth2Server;
   issuerUrl: string;
+}
+
+export function rewriteConnectionUrl(
+  baseUrl: string,
+  parts: { username?: string; password?: string; database?: string }
+): string {
+  const url = new URL(baseUrl);
+  if (parts.username !== undefined) url.username = parts.username;
+  if (parts.password !== undefined) url.password = parts.password;
+  if (parts.database !== undefined) url.pathname = `/${parts.database}`;
+  return url.toString();
 }
 
 export async function applyMigrations(ownerUrl: string): Promise<void> {
@@ -27,24 +40,98 @@ export async function applyMigrations(ownerUrl: string): Promise<void> {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
-    await client.query(`ALTER ROLE meeting_assistant_app WITH LOGIN PASSWORD '${APP_PASSWORD}'`);
+  } finally {
+    await client.end();
+  }
+}
+
+export async function bootstrapAppRole(adminUrl: string): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(fs.readFileSync(bootstrapRolesPath, 'utf8'));
+  } finally {
+    await client.end();
+  }
+}
+
+export async function enableAppRoleLogin(adminUrl: string, password = APP_PASSWORD): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(`ALTER ROLE meeting_assistant_app WITH LOGIN PASSWORD '${password}'`);
   } finally {
     await client.end();
   }
 }
 
 function appConnectionUrl(ownerUrl: string): string {
-  const url = new URL(ownerUrl);
-  url.username = 'meeting_assistant_app';
-  url.password = APP_PASSWORD;
-  return url.toString();
+  return rewriteConnectionUrl(ownerUrl, {
+    username: 'meeting_assistant_app',
+    password: APP_PASSWORD,
+  });
 }
 
 export async function startPostgres(): Promise<{ container: StartedPostgreSqlContainer; ownerUrl: string; appUrl: string }> {
   const container = await new PostgreSqlContainer('postgres:16-alpine').start();
   const ownerUrl = container.getConnectionUri();
   await applyMigrations(ownerUrl);
+  await enableAppRoleLogin(ownerUrl);
   return { container, ownerUrl, appUrl: appConnectionUrl(ownerUrl) };
+}
+
+/**
+ * Superuser creates a NOSUPERUSER NOBYPASSRLS database owner, bootstraps the
+ * app role, then runs migrations as that owner — matching managed Postgres.
+ */
+export async function startPostgresManagedOwner(): Promise<{
+  container: StartedPostgreSqlContainer;
+  adminUrl: string;
+  ownerUrl: string;
+  appUrl: string;
+}> {
+  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const adminUrl = container.getConnectionUri();
+  const admin = new pg.Client({ connectionString: adminUrl });
+  await admin.connect();
+  try {
+    await admin.query(`
+      CREATE ROLE meeting_assistant_owner
+        LOGIN PASSWORD '${MANAGED_OWNER_PASSWORD}'
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS
+    `);
+    await admin.query('CREATE DATABASE ma_managed OWNER meeting_assistant_owner');
+  } finally {
+    await admin.end();
+  }
+
+  await bootstrapAppRole(adminUrl);
+  await enableAppRoleLogin(adminUrl);
+
+  const adminGrants = new pg.Client({ connectionString: adminUrl });
+  await adminGrants.connect();
+  try {
+    await adminGrants.query(
+      'GRANT meeting_assistant_app TO meeting_assistant_owner WITH ADMIN OPTION'
+    );
+    await adminGrants.query('GRANT CONNECT ON DATABASE ma_managed TO meeting_assistant_app');
+  } finally {
+    await adminGrants.end();
+  }
+
+  const ownerUrl = rewriteConnectionUrl(adminUrl, {
+    username: 'meeting_assistant_owner',
+    password: MANAGED_OWNER_PASSWORD,
+    database: 'ma_managed',
+  });
+  await applyMigrations(ownerUrl);
+
+  const appUrl = rewriteConnectionUrl(adminUrl, {
+    username: 'meeting_assistant_app',
+    password: APP_PASSWORD,
+    database: 'ma_managed',
+  });
+  return { container, adminUrl, ownerUrl, appUrl };
 }
 
 export async function startMockOidc(): Promise<{ server: OAuth2Server; issuerUrl: string }> {
