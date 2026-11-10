@@ -219,6 +219,11 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
       tokenHash,
       expiresAt,
     });
+    await sendInviteEmail({
+      to: body.email,
+      tenantName: auth.tenant.name,
+      acceptUrl: acceptUrl(token, auth.tenant.slug),
+    });
     await recordAudit({
       tenantId: auth.tenant.id,
       actorUserId: auth.user.id,
@@ -227,12 +232,6 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
       meta: { email: body.email, role: body.role },
     });
     return loadDirectory(client, auth.tenant.id, true);
-  });
-
-  await sendInviteEmail({
-    to: body.email,
-    tenantName: auth.tenant.name,
-    acceptUrl: acceptUrl(token, auth.tenant.slug),
   });
 
   return seats;
@@ -269,6 +268,12 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
     if (invite.revoked_at) {
       throw new HttpError(400, 'INVITE_REVOKED', 'That invite was revoked.');
     }
+    const existingMember = (await membershipsForEmail(invite.email)).find(
+      (m) => m.tenant.id === auth.tenant.id
+    );
+    if (existingMember?.seat_status === 'active') {
+      throw new HttpError(409, 'ALREADY_MEMBER', 'This person already has a seat');
+    }
     const currentlyCounted = new Date(invite.expires_at).getTime() > Date.now();
     if (currentlyCounted) {
       if (usage.seats_used > usage.seat_limit) {
@@ -295,6 +300,11 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
         WHERE id = $1 AND tenant_id = $4`,
       [inviteId, tokenHash, expiresAt.toISOString(), auth.tenant.id]
     );
+    await sendInviteEmail({
+      to: email,
+      tenantName: auth.tenant.name,
+      acceptUrl: acceptUrl(token, auth.tenant.slug),
+    });
     await recordAudit({
       tenantId: auth.tenant.id,
       actorUserId: auth.user.id,
@@ -303,12 +313,6 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
       meta: { email: invite.email, role: invite.role },
     });
     return loadDirectory(client, auth.tenant.id, true);
-  });
-
-  await sendInviteEmail({
-    to: email,
-    tenantName: auth.tenant.name,
-    acceptUrl: acceptUrl(token, auth.tenant.slug),
   });
 
   return seats;
