@@ -1,31 +1,31 @@
 {
   "name": "meeting-assistant",
   "version": "1.0.0",
-  "description": "AI Meeting Assistant - Record, Transcribe, Analyze",
-  "main": "src/server.js",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
-    "worker": "node src/jobs/worker.js"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.0",
-    "assemblyai": "^4.4.0",
-    "axios": "^1.6.0",
-    "bull": "^4.12.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.0",
-    "express": "^4.18.0",
-    "express-validator": "^7.0.0",
-    "helmet": "^7.1.0",
-    "morgan": "^1.10.0",
-    "nodemailer": "^6.9.0",
-    "pg": "^8.11.0",
-    "redis": "^4.6.0",
-    "uuid": "^9.0.0",
-    "winston": "^3.11.0"
+    "dev": "concurrently -n api,worker,web -c blue,yellow,green \"npm run dev -w apps/api\" \"npm run dev -w apps/worker\" \"npm run dev -w apps/web\"",
+    "dev:api": "npm run dev -w apps/api",
+    "dev:worker": "npm run dev -w apps/worker",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -ws --if-present",
+    "lint": "npm run lint -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "test:ci": "npm run test -ws --if-present -- --run",
+    "migrate": "node-pg-migrate -m db/migrations",
+    "migrate:up": "node-pg-migrate up -m db/migrations",
+    "migrate:down": "node-pg-migrate down -m db/migrations"
   },
   "devDependencies": {
-    "nodemon": "^3.0.0"
+    "concurrently": "^9.1.2",
+    "node-pg-migrate": "^9.0.0",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
