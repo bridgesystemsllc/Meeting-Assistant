@@ -20,6 +20,11 @@ import { issueSession, readSessionToken, revokeSession } from '../lib/session.js
 
 export const authRouter = Router();
 
+authRouter.use((_req, res, next) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+
 const OIDC_STATE_TTL_MS = 10 * 60 * 1000;
 
 function frontendUrl(): string {

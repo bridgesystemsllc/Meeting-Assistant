@@ -10,6 +10,10 @@ const isProduction = process.env.NODE_ENV === 'production';
 export const LOG_REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
+  'req.headers.referer',
+  'req.headers.referrer',
+  'referer',
+  'referrer',
   'res.headers["set-cookie"]',
   'cookie',
   'set-cookie',

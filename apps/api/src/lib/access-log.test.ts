@@ -13,12 +13,14 @@ describe('access log', () => {
       'http-version': () => '1.1',
       status: () => '302',
       res: () => '0',
-      referrer: () => '-',
+      referrer: () => 'https://mail.example.com/invite?token=plaintext-token',
       'user-agent': () => 'test',
     };
     const line = accessLogLine(tokens, {} as Request, {} as Response);
     expect(line).toContain('/api/v1/auth/login/google');
     expect(line).not.toContain('invite=');
     expect(line).not.toContain('plaintext-token');
+    expect(line).not.toContain('Referer');
+    expect(line).not.toContain('mail.example.com');
   });
 });

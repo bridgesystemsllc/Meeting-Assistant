@@ -27,6 +27,12 @@ describe('LoginPage', () => {
     vi.clearAllMocks();
   });
 
+  it('sets Referrer-Policy no-referrer on the invite/auth page', () => {
+    renderLogin({}, '/login?invite=plaintext-token');
+    const metas = document.querySelectorAll('meta[name="referrer"]');
+    expect([...metas].some((el) => el.getAttribute('content') === 'no-referrer')).toBe(true);
+  });
+
   it('renders Google and Microsoft buttons', () => {
     renderLogin({});
     expect(screen.getByRole('link', { name: /continue with google/i }).getAttribute('href')).toBe(
