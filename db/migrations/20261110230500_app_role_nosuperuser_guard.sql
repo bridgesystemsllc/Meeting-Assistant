@@ -1,4 +1,4 @@
--- Migration: 20261110240000_app_role_nosuperuser_guard
+-- Migration: 20261110230500_app_role_nosuperuser_guard
 -- 002's insufficient_privilege fallback only inspected rolbypassrls.
 -- Hosts that already applied 002 will not re-run it, so this trailing
 -- migration is the portable check. Role attributes are unchanged.

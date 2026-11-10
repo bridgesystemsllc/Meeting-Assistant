@@ -9,7 +9,7 @@ import { getAppPool, getOwnerPool, resetPools } from '../lib/db.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const guardSql = fs.readFileSync(
-  path.resolve(here, '../../../../db/migrations/20261110240000_app_role_nosuperuser_guard.sql'),
+  path.resolve(here, '../../../../db/migrations/20261110230500_app_role_nosuperuser_guard.sql'),
   'utf8'
 );
 
