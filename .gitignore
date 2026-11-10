@@ -39,4 +39,4 @@ vite.config.js
 vite.config.d.ts
 
 # Package manager
-package-lock.json
+# package-lock.json is committed for reproducible CI builds
