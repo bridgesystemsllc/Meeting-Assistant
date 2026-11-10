@@ -15,16 +15,18 @@ import { authRouter } from './routes/auth.js';
 import { meRouter } from './routes/me.js';
 import { errorHandler } from './middleware/errors.js';
 import { v1AuthGuard } from './middleware/auth.js';
+import { accessLogLine } from './lib/access-log.js';
 
 export function createApp(): express.Express {
   const app = express();
 
+  app.set('trust proxy', 1);
   app.use(helmet());
   app.use(cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
     credentials: true,
   }));
-  app.use(morgan('combined'));
+  app.use(morgan(accessLogLine));
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use((req, _res, next) => {

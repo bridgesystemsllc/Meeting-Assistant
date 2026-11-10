@@ -6,6 +6,7 @@
 
 import pg from 'pg';
 import { logger } from './logger.js';
+import { appDatabaseUrl } from './runtime-env.js';
 
 const { Pool } = pg;
 
@@ -38,7 +39,7 @@ export function getOwnerPool(): pg.Pool {
 
 export function getAppPool(): pg.Pool {
   if (!appPool) {
-    appPool = createPool(process.env.DATABASE_APP_URL || process.env.DATABASE_URL, 'app');
+    appPool = createPool(appDatabaseUrl(), 'app');
   }
   return appPool;
 }

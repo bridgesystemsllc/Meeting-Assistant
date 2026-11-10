@@ -4,21 +4,39 @@
  */
 
 import { Router } from 'express';
+import { z } from 'zod';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
-import { unauthenticated } from '../lib/http-error.js';
+import { badRequest, notFound, sendError, unauthenticated } from '../lib/http-error.js';
 
 export const meetingsRouter = Router();
 
-/**
- * GET /api/meetings
- * List meetings (stub - auth/tenant filtering in Phase 2)
- */
+const UuidSchema = z.string().uuid();
+const MAX_LIMIT = 100;
+
+function parseLimitOffset(query: RequestQuery): { limit: number; offset: number } | null {
+  const rawLimit = query.limit === undefined ? 20 : Number(query.limit);
+  const rawOffset = query.offset === undefined ? 0 : Number(query.offset);
+  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
+    return null;
+  }
+  const limit = Math.min(MAX_LIMIT, Math.max(1, Math.trunc(rawLimit)));
+  const offset = Math.max(0, Math.trunc(rawOffset));
+  return { limit, offset };
+}
+
+type RequestQuery = Record<string, unknown>;
+
 meetingsRouter.get('/', async (req, res) => {
-  const { limit = '20', offset = '0' } = req.query;
   const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
+    return;
+  }
+
+  const page = parseLimitOffset(req.query as RequestQuery);
+  if (!page) {
+    badRequest(res, 'INVALID_LIMIT', 'limit and offset must be numbers');
     return;
   }
 
@@ -35,7 +53,7 @@ meetingsRouter.get('/', async (req, res) => {
        WHERE m.tenant_id = $3
        ORDER BY m.created_at DESC
        LIMIT $1 OFFSET $2`,
-      [parseInt(limit as string), parseInt(offset as string), tenantId]
+      [page.limit, page.offset, tenantId]
       )
     );
 
@@ -45,19 +63,20 @@ meetingsRouter.get('/', async (req, res) => {
     });
   } catch (err) {
     logger.error({ err }, 'Failed to list meetings');
-    res.status(500).json({ error: 'Failed to fetch meetings' });
+    sendError(res, 500, 'INTERNAL', 'Failed to fetch meetings');
   }
 });
 
-/**
- * GET /api/meetings/:id
- * Get meeting details (stub - auth/tenant filtering in Phase 2)
- */
 meetingsRouter.get('/:id', async (req, res) => {
   const { id } = req.params;
   const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
+    return;
+  }
+
+  if (!UuidSchema.safeParse(id).success) {
+    badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 
@@ -82,7 +101,8 @@ meetingsRouter.get('/:id', async (req, res) => {
     });
 
     if (!loaded) {
-      return res.status(404).json({ error: 'Meeting not found' });
+      notFound(res, 'Meeting not found');
+      return;
     }
 
     const { meeting, transcript, analysis } = loaded;
@@ -117,6 +137,6 @@ meetingsRouter.get('/:id', async (req, res) => {
     });
   } catch (err) {
     logger.error({ err, id }, 'Failed to get meeting');
-    res.status(500).json({ error: 'Failed to fetch meeting' });
+    sendError(res, 500, 'INTERNAL', 'Failed to fetch meeting');
   }
 });

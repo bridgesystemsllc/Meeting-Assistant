@@ -60,32 +60,47 @@ export async function startMockOidc(): Promise<{ server: OAuth2Server; issuerUrl
 
 export function configureMockUser(
   server: OAuth2Server,
-  profile: { email: string; name?: string; sub?: string }
+  profile: {
+    email: string;
+    name?: string;
+    sub?: string;
+    emailVerified?: boolean;
+    xmsEdov?: boolean;
+  }
 ): void {
+  server.service.removeAllListeners('beforeTokenSigning');
+  server.service.removeAllListeners('beforeUserinfo');
+  const emailVerified = profile.emailVerified !== false;
+  const sub = profile.sub ?? `mock-sub-${profile.email}`;
   const handler = (token: { payload: Record<string, unknown> }) => {
     token.payload.email = profile.email;
-    token.payload.email_verified = true;
+    token.payload.email_verified = emailVerified;
     token.payload.name = profile.name ?? profile.email;
     token.payload.preferred_username = profile.email;
-    if (profile.sub) token.payload.sub = profile.sub;
+    token.payload.sub = sub;
     token.payload.tid = 'mock-tenant';
+    if (profile.xmsEdov === true) token.payload.xms_edov = true;
+    if (profile.xmsEdov === false) token.payload.xms_edov = false;
   };
   server.service.on('beforeTokenSigning', handler);
   server.service.on('beforeUserinfo', (userInfoResponse) => {
     userInfoResponse.body.email = profile.email;
-    userInfoResponse.body.email_verified = true;
+    userInfoResponse.body.email_verified = emailVerified;
     userInfoResponse.body.name = profile.name ?? profile.email;
+    userInfoResponse.body.sub = sub;
   });
 }
 
 export function applyAuthEnv(params: { ownerUrl: string; appUrl: string; issuerUrl: string }): void {
   process.env.NODE_ENV = 'test';
   process.env.DATABASE_URL = params.ownerUrl;
-  process.env.DATABASE_APP_URL = params.appUrl;
+  process.env.APP_DATABASE_URL = params.appUrl;
+  delete process.env.DATABASE_APP_URL;
   process.env.PG_POOL_MAX = '1';
   process.env.COOKIE_SECURE = 'false';
   process.env.FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
   process.env.OIDC_ALLOW_MOCK = 'true';
+  process.env.OIDC_STATE_SECRET = 'test-oidc-state-secret';
   process.env.GOOGLE_CLIENT_ID = 'test-google-client';
   process.env.GOOGLE_CLIENT_SECRET = 'test-google-secret';
   process.env.GOOGLE_ISSUER = params.issuerUrl;

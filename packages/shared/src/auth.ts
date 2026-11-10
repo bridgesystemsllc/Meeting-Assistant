@@ -31,6 +31,7 @@ export const AuthErrorCodeSchema = z.enum([
   'INVALID_ISSUER',
   'INVALID_INVITE',
   'INVITE_EMAIL_MISMATCH',
+  'EMAIL_UNVERIFIED',
   'OIDC_FAILED',
   'SEAT_INACTIVE',
   'SEAT_LIMIT_REACHED',
@@ -97,6 +98,7 @@ export type ApiErrorBody = z.infer<typeof ApiErrorBodySchema>;
 export const GLOBAL_TABLES = [
   'tenants',
   'users',
+  'user_identities',
   'webhook_events',
   'sessions',
   'oidc_login_state',

@@ -48,7 +48,7 @@ describe('MeResponseSchema', () => {
 describe('GLOBAL_TABLES', () => {
   it('lists the ATLAS Q4 allow-list', () => {
     expect([...GLOBAL_TABLES].sort()).toEqual(
-      ['oidc_login_state', 'sessions', 'tenants', 'users', 'webhook_events'].sort()
+      ['oidc_login_state', 'sessions', 'tenants', 'user_identities', 'users', 'webhook_events'].sort()
     );
   });
 });

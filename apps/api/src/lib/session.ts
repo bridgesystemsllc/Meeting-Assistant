@@ -9,6 +9,7 @@ import { hashToken, randomToken } from './crypto.js';
 import {
   createSession,
   deleteSession,
+  purgeExpiredAuthRows,
   sessionContext,
   touchSession,
   type AuthSessionContext,
@@ -36,13 +37,17 @@ export async function issueSession(params: {
     await deleteSession(hashToken(params.previousToken)).catch(() => undefined);
   }
 
+  await purgeExpiredAuthRows().catch(() => undefined);
+
   const token = randomToken(32);
   const now = Date.now();
+  const absoluteMs = absoluteTtlSeconds() * 1000;
+  const idleMs = Math.min(idleTtlSeconds() * 1000, absoluteMs);
   await createSession({
     userId: params.userId,
     tokenHash: hashToken(token),
-    expiresAt: new Date(now + absoluteTtlSeconds() * 1000),
-    idleExpiresAt: new Date(now + idleTtlSeconds() * 1000),
+    expiresAt: new Date(now + absoluteMs),
+    idleExpiresAt: new Date(now + idleMs),
     activeTenantId: params.activeTenantId,
   });
 
