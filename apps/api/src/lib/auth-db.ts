@@ -6,7 +6,7 @@
 import type pg from 'pg';
 import { db } from './db.js';
 
-type AuthQueryClient = {
+export type AuthQueryClient = {
   query: <T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
     values?: unknown[]
@@ -139,8 +139,9 @@ export async function createSession(params: {
   expiresAt: Date;
   idleExpiresAt: Date;
   activeTenantId: string | null;
+  client?: AuthQueryClient;
 }): Promise<string> {
-  const result = await db.query<{ auth_create_session: string }>(
+  const result = await exec(params.client).query<{ auth_create_session: string }>(
     'SELECT auth_create_session($1,$2,$3,$4,$5) AS auth_create_session',
     [
       params.userId,
@@ -194,7 +195,7 @@ export interface InviteLookup {
   email?: string;
   role?: string;
   expires_at?: string;
-  tenant?: { id: string; name: string; slug: string };
+  tenant?: { id: string; name?: string; slug?: string };
 }
 
 export async function lookupInvite(tokenHash: string, expectedSlug: string | null): Promise<InviteLookup> {

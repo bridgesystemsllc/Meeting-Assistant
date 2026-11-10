@@ -336,6 +336,106 @@ describe('activity integration', () => {
     expect(deactRows).toHaveLength(beforeCount + 1);
   });
 
+  it('writes failed-invite on used, revoked, and expired lookups without leaking tenant', async () => {
+    const admin = await login('owner@example.com', 'Avery Owner');
+
+    await admin.post('/api/v1/tenant/seats/invite').send({
+      email: 'lookup.used@example.com',
+      role: 'member',
+    });
+    const usedToken = tokenFrom(inbox.at(-1));
+    const accepted = await loginWithInvite('lookup.used@example.com', 'Lookup Used', usedToken);
+    expect(accepted.status).toBe(302);
+    const usedLookup = await request(origin()).get(`/api/v1/auth/invites/${usedToken}`);
+    expect(usedLookup.status).toBe(400);
+    expect(usedLookup.body.error.code).toBe('INVITE_USED');
+    expect(usedLookup.body).not.toHaveProperty('tenant');
+    expect(usedLookup.body).not.toHaveProperty('email');
+    expect(JSON.stringify(usedLookup.body)).not.toMatch(new RegExp(ACME, 'i'));
+
+    const revokedInvite = await admin.post('/api/v1/tenant/seats/invite').send({
+      email: 'lookup.revoked@example.com',
+      role: 'member',
+    });
+    expect(revokedInvite.status).toBe(201);
+    const revokedId = revokedInvite.body.invites.find(
+      (i: { email: string }) => i.email === 'lookup.revoked@example.com'
+    )?.id as string;
+    const revokedToken = tokenFrom(inbox.at(-1));
+    const revoked = await admin.post(`/api/v1/tenant/seats/invites/${revokedId}/revoke`);
+    expect(revoked.status).toBe(200);
+    const revokedLookup = await request(origin()).get(`/api/v1/auth/invites/${revokedToken}`);
+    expect(revokedLookup.status).toBe(400);
+    expect(revokedLookup.body.error.code).toBe('INVITE_REVOKED');
+    expect(JSON.stringify(revokedLookup.body)).not.toMatch(new RegExp(ACME, 'i'));
+
+    await admin.post('/api/v1/tenant/seats/invite').send({
+      email: 'lookup.expired@example.com',
+      role: 'member',
+    });
+    const expiredToken = tokenFrom(inbox.at(-1));
+    await getOwnerPool().query(
+      `UPDATE invites SET expires_at = NOW() - INTERVAL '1 hour' WHERE email = 'lookup.expired@example.com'`
+    );
+    const expiredLookup = await request(origin()).get(`/api/v1/auth/invites/${expiredToken}`);
+    expect(expiredLookup.status).toBe(400);
+    expect(expiredLookup.body.error.code).toBe('INVITE_EXPIRED');
+    expect(JSON.stringify(expiredLookup.body)).not.toMatch(new RegExp(ACME, 'i'));
+
+    const failed = await admin.get('/api/v1/tenant/activity').query({ action: 'failed-invite', limit: 50 });
+    const codes = (failed.body.items as { metadata?: { code?: string } }[]).map((item) => item.metadata?.code);
+    expect(codes).toEqual(expect.arrayContaining(['INVITE_USED', 'INVITE_REVOKED', 'INVITE_EXPIRED']));
+  });
+
+  it('does not leave an orphan session when login audit fails', async () => {
+    const owner = getOwnerPool();
+    const before = await owner.query<{ id: string }>(
+      `SELECT id FROM sessions WHERE user_id = $1`,
+      [ACME_OWNER]
+    );
+    const beforeIds = new Set(before.rows.map((row) => row.id));
+    await owner.query(`
+      CREATE OR REPLACE FUNCTION audit_fail_login()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.action = 'login' THEN
+          RAISE EXCEPTION 'forced login audit failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await owner.query(`
+      DROP TRIGGER IF EXISTS audit_fail_login ON audit_events;
+      CREATE TRIGGER audit_fail_login
+        BEFORE INSERT ON audit_events
+        FOR EACH ROW EXECUTE FUNCTION audit_fail_login()
+    `);
+    try {
+      clearOidcCache();
+      configureMockUser(stack.mockOidc, { email: 'owner@example.com', name: 'Avery Owner' });
+      const agent = request.agent(origin());
+      const start = await agent.get('/api/v1/auth/login/google').redirects(0);
+      const idp = await fetch(start.headers.location as string, { redirect: 'manual' });
+      const callback = new URL(idp.headers.get('location')!);
+      const done = await agent.get(callback.pathname + callback.search).redirects(0);
+      expect(done.status).toBe(500);
+      const setCookie = done.headers['set-cookie'];
+      const cookieHeader = Array.isArray(setCookie) ? setCookie.join(';') : String(setCookie ?? '');
+      expect(cookieHeader).not.toMatch(/ma_session=[^;]+/);
+      const after = await owner.query<{ id: string }>(
+        `SELECT id FROM sessions WHERE user_id = $1`,
+        [ACME_OWNER]
+      );
+      expect(after.rows.every((row) => beforeIds.has(row.id))).toBe(true);
+    } finally {
+      await owner.query('DROP TRIGGER IF EXISTS audit_fail_login ON audit_events');
+      await owner.query('DROP FUNCTION IF EXISTS audit_fail_login()');
+    }
+  });
+
   it('writes failed-invite on email mismatch and keeps accept+audit in one transaction', async () => {
     const admin = await login('owner@example.com', 'Avery Owner');
     const invited = await admin.post('/api/v1/tenant/seats/invite').send({
