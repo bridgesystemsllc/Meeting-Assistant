@@ -1,3 +1,5 @@
+import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EmailMessage } from '@meeting-assistant/shared';
 import {
@@ -5,6 +7,7 @@ import {
   createCapturingEmailAdapter,
   createEmailAdapter,
   createLogEmailAdapter,
+  createSmtpEmailAdapter,
   sendInviteEmail,
   setEmailAdapter,
 } from './email.js';
@@ -58,6 +61,32 @@ describe('email adapter', () => {
     expect(JSON.stringify(spy.mock.calls[0])).not.toContain(acceptUrl);
     expect(JSON.stringify(payload)).not.toContain('token_hash');
   });
+
+  it('fails fast when the SMTP server accepts the TCP connection but never greets', async () => {
+    const sockets: net.Socket[] = [];
+    const silent = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.on('error', () => undefined);
+    });
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+    const port = (silent.address() as AddressInfo).port;
+    const adapter = createSmtpEmailAdapter({
+      host: '127.0.0.1',
+      port,
+      from: 'noreply@example.com',
+      secure: false,
+    });
+    const started = Date.now();
+    try {
+      await expect(
+        adapter.send({ to: 'silent@example.com', subject: 'invite', text: 'hello' })
+      ).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(8_000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => silent.close((err) => (err ? reject(err) : resolve())));
+    }
+  }, 15_000);
 
   it('capturing adapter stores the dispatched invite email', async () => {
     const inbox: EmailMessage[] = [];
