@@ -10,6 +10,7 @@ import {
   APP_ROLE_GUARD_SQL,
   assertConnectedAppRole,
   assertRestrictedAppRole,
+  type AppRoleGuardRow,
 } from '../lib/app-role.js';
 import { getAppPool, getOwnerPool, resetPools, withTenant } from '../lib/db.js';
 import { issueSession } from '../lib/session.js';
@@ -98,24 +99,18 @@ describe('non-superuser non-BYPASSRLS owner', () => {
   }
 
   it('refuses a NOSUPERUSER NOBYPASSRLS table owner as APP_DATABASE_URL and still boots the app role', async () => {
-    const ownerGuard = await getOwnerPool().query<{
-      rolsuper: boolean;
-      rolbypassrls: boolean;
-      owns_public_relation: boolean;
-      has_unrestricted_rls_policy: boolean;
-    }>(APP_ROLE_GUARD_SQL);
+    const ownerGuard = await getOwnerPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
     expect(ownerGuard.rows[0].rolsuper).toBe(false);
     expect(ownerGuard.rows[0].rolbypassrls).toBe(false);
+    expect(ownerGuard.rows[0].is_app_role).toBe(false);
     expect(ownerGuard.rows[0].owns_public_relation).toBe(true);
-    expect(ownerGuard.rows[0].has_unrestricted_rls_policy).toBe(true);
+    expect(ownerGuard.rows[0].has_nontenant_policy).toBe(true);
     expect(() => assertRestrictedAppRole(ownerGuard.rows[0])).toThrow(/meeting_assistant_app/);
 
-    const appGuard = await getAppPool().query<{
-      owns_public_relation: boolean;
-      has_unrestricted_rls_policy: boolean;
-    }>(APP_ROLE_GUARD_SQL);
+    const appGuard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+    expect(appGuard.rows[0].is_app_role).toBe(true);
     expect(appGuard.rows[0].owns_public_relation).toBe(false);
-    expect(appGuard.rows[0].has_unrestricted_rls_policy).toBe(false);
+    expect(appGuard.rows[0].has_nontenant_policy).toBe(false);
     await assertConnectedAppRole();
 
     const bootEnv = {
