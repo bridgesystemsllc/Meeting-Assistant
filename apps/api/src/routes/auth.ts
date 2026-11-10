@@ -41,6 +41,18 @@ function appendCookies(res: Response, values: string | string[]): void {
   }
 }
 
+const INVITE_ERROR_QUERY: Record<string, string> = {
+  INVALID_INVITE: 'invalid_invite',
+  INVITE_USED: 'invite_used',
+  INVITE_EXPIRED: 'invite_expired',
+  INVITE_REVOKED: 'invite_revoked',
+  INVITE_WRONG_TENANT: 'invite_tenant',
+  INVITE_EMAIL_MISMATCH: 'invite_email',
+  SEAT_LIMIT_REACHED: 'seat_limit',
+  MEMBER_DEACTIVATED: 'member_deactivated',
+  EMAIL_UNVERIFIED: 'unverified',
+};
+
 authRouter.get('/login/:provider', async (req, res, next) => {
   try {
     const provider = parseProvider(req.params.provider);
@@ -154,27 +166,31 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
     }
 
     const memberships = resolved.memberships ?? [];
+    // An invite in the login state always reports its outcome. A used/expired
+    // link must not silently succeed just because the user already has a seat.
     if (stored.invite_token_hash && resolved.invite && !resolved.invite.ok) {
-      if (memberships.filter((m) => m.seat_status === 'active').length === 0) {
-        logger.info({ code: resolved.invite.code }, 'invite acceptance failed');
-        redirectToLogin(
-          res,
-          resolved.invite.code === 'INVITE_EMAIL_MISMATCH' ? 'invite_email' : 'invalid_invite'
-        );
-        return;
-      }
-    }
-
-    const active = memberships.filter((m) => m.seat_status === 'active');
-    if (active.length === 0) {
-      redirectToLogin(res, memberships.length > 0 ? 'seat_inactive' : 'no_access');
+      logger.info({ code: resolved.invite.code }, 'invite acceptance failed');
+      redirectToLogin(
+        res,
+        INVITE_ERROR_QUERY[resolved.invite.code ?? 'INVALID_INVITE'] ?? 'invalid_invite'
+      );
       return;
     }
+
+    if (memberships.length === 0) {
+      redirectToLogin(res, 'no_access');
+      return;
+    }
+
+    // Invited / deactivated members still get a session so /me can show
+    // status and requireActiveSeat can return 403 SEAT_INACTIVE (ATLAS Q11).
+    const active = memberships.filter((m) => m.seat_status === 'active');
+    const selected = active[0] ?? memberships[0];
 
     const previous = readSessionToken(req.cookies);
     const session = await issueSession({
       userId: resolved.user.id,
-      activeTenantId: active[0].tenant.id,
+      activeTenantId: selected.tenant.id,
       previousToken: previous,
     });
     appendCookies(res, serializeClearedOidcStateCookie());

@@ -18,6 +18,7 @@ vi.mock('../hooks/useAuth', () => ({
         slug: 'acme-notes',
       },
       role: 'owner',
+      seat_status: 'active',
       memberships: [],
     },
     error: null,

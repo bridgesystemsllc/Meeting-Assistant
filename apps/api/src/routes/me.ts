@@ -13,6 +13,7 @@ meRouter.get('/', (req, res) => {
     user: req.auth.user,
     tenant: req.auth.tenant,
     role: req.auth.role,
+    seat_status: req.auth.seat_status,
     memberships: req.auth.memberships,
   });
   res.json(body);

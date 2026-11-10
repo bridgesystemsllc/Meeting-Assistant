@@ -82,6 +82,7 @@ export const MeResponseSchema = z.object({
   user: PublicUserSchema,
   tenant: PublicTenantSchema,
   role: RoleSchema,
+  seat_status: SeatStatusSchema,
   memberships: z.array(MembershipViewSchema),
 });
 export type MeResponse = z.infer<typeof MeResponseSchema>;

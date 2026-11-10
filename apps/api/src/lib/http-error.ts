@@ -29,7 +29,10 @@ export function forbidden(res: Response, message = 'Insufficient role'): Respons
   return sendError(res, 403, 'FORBIDDEN' satisfies AuthErrorCode, message);
 }
 
-export function seatInactive(res: Response, message = 'Seat is inactive'): Response {
+export function seatInactive(
+  res: Response,
+  message = 'Your seat is inactive. Ask your admin.'
+): Response {
   return sendError(res, 403, 'SEAT_INACTIVE' satisfies AuthErrorCode, message);
 }
 

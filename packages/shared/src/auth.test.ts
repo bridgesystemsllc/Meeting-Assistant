@@ -33,6 +33,7 @@ describe('MeResponseSchema', () => {
       user: { id: '00000000-0000-0000-0000-000000000002', email: 'owner@example.com', name: 'Owner' },
       tenant: { id: '00000000-0000-0000-0000-000000000010', name: 'Acme Notes', slug: 'acme-notes' },
       role: 'owner',
+      seat_status: 'active',
       memberships: [
         {
           id: '00000000-0000-0000-0000-000000000020',
