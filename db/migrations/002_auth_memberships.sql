@@ -79,16 +79,39 @@ CREATE INDEX IF NOT EXISTS idx_invites_email ON invites(lower(email));
 
 -- =============================================
 -- APP ROLE: non-owner, NOBYPASSRLS
+-- CREATE ROLE / ALTER ROLE … NOBYPASSRLS require a superuser. On managed
+-- Postgres, run db/bootstrap-roles.sql as a superuser first; this block then
+-- becomes a no-op besides verifying NOBYPASSRLS. Superuser installs still
+-- create the role here (same attributes as before).
 -- =============================================
 
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'meeting_assistant_app') THEN
-    CREATE ROLE meeting_assistant_app
-      NOSUPERUSER NOCREATEDB NOCREATEROLE
-      NOINHERIT NOLOGIN NOBYPASSRLS;
+    BEGIN
+      CREATE ROLE meeting_assistant_app
+        NOSUPERUSER NOCREATEDB NOCREATEROLE
+        NOINHERIT NOLOGIN NOBYPASSRLS;
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        RAISE EXCEPTION
+          'Role meeting_assistant_app is missing and CREATE ROLE requires a superuser. Run db/bootstrap-roles.sql as a superuser, then re-run migrations.';
+    END;
   ELSE
-    ALTER ROLE meeting_assistant_app NOSUPERUSER NOBYPASSRLS NOINHERIT;
+    BEGIN
+      ALTER ROLE meeting_assistant_app NOSUPERUSER NOBYPASSRLS NOINHERIT;
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        IF EXISTS (
+          SELECT 1 FROM pg_roles
+          WHERE rolname = 'meeting_assistant_app' AND rolbypassrls
+        ) THEN
+          RAISE EXCEPTION
+            'meeting_assistant_app has BYPASSRLS; a superuser must run db/bootstrap-roles.sql';
+        END IF;
+        RAISE NOTICE
+          'Skipped ALTER ROLE meeting_assistant_app (no superuser); existing role is NOBYPASSRLS';
+    END;
   END IF;
 END $$;
 
