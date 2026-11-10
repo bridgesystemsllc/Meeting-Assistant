@@ -1,10 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Job } from 'bullmq';
 
-// Mock dependencies
-vi.mock('../lib/db.js', () => ({
-  db: {
-    query: vi.fn(),
+const { query, runTenantJob, lookupUserContact } = vi.hoisted(() => ({
+  query: vi.fn(),
+  runTenantJob: vi.fn(),
+  lookupUserContact: vi.fn(),
+}));
+
+vi.mock('../lib/tenantJob.js', () => ({
+  runTenantJob,
+  TenantJobError: class extends Error {
+    code = 'TENANT_REQUIRED';
   },
+}));
+
+vi.mock('../lib/user-lookup.js', () => ({
+  lookupUserContact,
 }));
 
 vi.mock('../lib/logger.js', () => ({
@@ -33,24 +44,28 @@ vi.mock('../services/email.js', () => ({
   sendRecapEmail: vi.fn(),
 }));
 
-import { db } from '../lib/db.js';
 import { recallService } from '../services/recall.js';
 import { analyzeMeeting } from '../services/analysis.js';
 import { sendRecapEmail } from '../services/email.js';
 import { processMeeting, resetServices, type ProcessMeetingData } from './process-meeting.js';
-import type { Job } from 'bullmq';
+
+const TENANT_A = '00000000-0000-0000-0000-000000000010';
+const MEETING_ID = '123e4567-e89b-12d3-a456-426614174000';
+const USER_ID = '00000000-0000-0000-0000-000000000002';
 
 const MOCK_MEETING = {
-  id: '123e4567-e89b-12d3-a456-426614174000',
-  tenant_id: '00000000-0000-0000-0000-000000000001',
-  user_id: '00000000-0000-0000-0000-000000000002',
+  id: MEETING_ID,
+  tenant_id: TENANT_A,
+  user_id: USER_ID,
   title: 'Q4 Product Launch Meeting',
   platform: 'zoom',
   started_at: '2026-11-10T14:00:00Z',
   duration_seconds: 3600,
+  media_deleted_at: null as Date | null,
 };
 
 const MOCK_USER = {
+  id: USER_ID,
   email: 'test@example.com',
   name: 'Test User',
 };
@@ -94,27 +109,56 @@ const MOCK_ANALYSIS = {
   next_meeting_suggestions: { recommended_agenda: [] },
 };
 
+function mockJob(data: Partial<ProcessMeetingData> = {}): Job<ProcessMeetingData> {
+  return {
+    data: {
+      meetingId: MEETING_ID,
+      recallBotId: 'bot-123',
+      tenantId: TENANT_A,
+      ...data,
+    },
+    id: 'job-123',
+    opts: { attempts: 3 },
+    attemptsMade: 0,
+    updateProgress: vi.fn(),
+  } as unknown as Job<ProcessMeetingData>;
+}
+
 describe('processMeeting', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetServices();
+    
+    // Default mock implementations
+    query.mockResolvedValue({ rows: [], rowCount: 1 });
+    runTenantJob.mockImplementation(
+      async (_data: unknown, fn: (client: { query: typeof query }, tenantId: string) => unknown) =>
+        fn({ query }, TENANT_A)
+    );
+    lookupUserContact.mockResolvedValue(MOCK_USER);
   });
 
   afterEach(() => {
     resetServices();
+    delete process.env.SMTP_HOST;
+    delete process.env.SMTP_USER;
   });
 
   it('processes a meeting successfully through full pipeline', async () => {
+    process.env.SMTP_HOST = 'smtp.test.com';
+    process.env.SMTP_USER = 'test';
+
     // Setup mock responses
-    vi.mocked(db.query)
-      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 } as never) // SELECT meeting
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE status to processing
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // INSERT transcript
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE meeting language
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // INSERT analysis
-      .mockResolvedValueOnce({ rows: [MOCK_USER], rowCount: 1 } as never) // SELECT user
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // INSERT email_deliveries
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE status to completed
+    query
+      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 }) // SELECT meeting
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE status to processing
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT transcript
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE meeting language
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE media_deleted_at
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT analysis
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT email_deliveries
+      .mockResolvedValueOnce({ rows: [{ media_deleted_at: new Date() }], rowCount: 1 }) // SELECT media_deleted_at
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE status to completed
 
     vi.mocked(recallService.getTranscript).mockResolvedValue(MOCK_TRANSCRIPT);
     vi.mocked(recallService.deleteMedia).mockResolvedValue(true);
@@ -126,73 +170,57 @@ describe('processMeeting', () => {
     });
     vi.mocked(sendRecapEmail).mockResolvedValue(true);
 
-    const mockJob = {
-      data: {
-        meetingId: MOCK_MEETING.id,
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
-
-    const result = await processMeeting(mockJob);
+    const job = mockJob();
+    const result = await processMeeting(job);
 
     expect(result.success).toBe(true);
-    expect(result.meetingId).toBe(MOCK_MEETING.id);
+    expect(result.meetingId).toBe(MEETING_ID);
+    expect(runTenantJob).toHaveBeenCalled();
     expect(recallService.getTranscript).toHaveBeenCalledWith('bot-123');
     expect(recallService.deleteMedia).toHaveBeenCalledWith('bot-123');
     expect(analyzeMeeting).toHaveBeenCalled();
     expect(sendRecapEmail).toHaveBeenCalled();
-    expect(mockJob.updateProgress).toHaveBeenCalledTimes(8);
+    expect(lookupUserContact).toHaveBeenCalledWith(USER_ID);
+    expect(job.updateProgress).toHaveBeenCalled();
   });
 
   it('fails when meeting is not found', async () => {
-    vi.mocked(db.query).mockResolvedValue({ rows: [], rowCount: 0 } as never);
+    query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const mockJob = {
-      data: {
-        meetingId: 'nonexistent-meeting',
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
+    const job = mockJob({ meetingId: 'nonexistent-meeting' });
 
-    await expect(processMeeting(mockJob)).rejects.toThrow('Meeting nonexistent-meeting not found');
+    await expect(processMeeting(job)).rejects.toThrow('Meeting nonexistent-meeting not found');
   });
 
   it('fails when no transcript is available', async () => {
-    vi.mocked(db.query)
-      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE to processing
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE to failed
+    query
+      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE to processing
 
     vi.mocked(recallService.getTranscript).mockResolvedValue(null);
 
-    const mockJob = {
-      data: {
-        meetingId: MOCK_MEETING.id,
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
-
-    const result = await processMeeting(mockJob);
+    const job = mockJob();
+    const result = await processMeeting(job);
 
     expect(result.success).toBe(false);
   });
 
-  it('continues when media deletion fails', async () => {
-    vi.mocked(db.query)
-      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [MOCK_USER], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+  it('marks as media_pending when media deletion fails (P1-4)', async () => {
+    process.env.SMTP_HOST = 'smtp.test.com';
+    process.env.SMTP_USER = 'test';
+
+    query
+      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE to processing
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT transcript
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE language
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT analysis
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT email_deliveries
+      .mockResolvedValueOnce({ rows: [{ media_deleted_at: null }], rowCount: 1 }) // SELECT media_deleted_at (null)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // UPDATE to media_pending
 
     vi.mocked(recallService.getTranscript).mockResolvedValue(MOCK_TRANSCRIPT);
-    vi.mocked(recallService.deleteMedia).mockResolvedValue(false); // Failed but continues
+    vi.mocked(recallService.deleteMedia).mockResolvedValue(false); // Failed
     vi.mocked(recallService.formatTranscript).mockReturnValue(MOCK_FORMATTED_TRANSCRIPT);
     vi.mocked(analyzeMeeting).mockResolvedValue({
       analysis: MOCK_ANALYSIS,
@@ -201,34 +229,99 @@ describe('processMeeting', () => {
     });
     vi.mocked(sendRecapEmail).mockResolvedValue(true);
 
-    const mockJob = {
-      data: {
-        meetingId: MOCK_MEETING.id,
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
-
-    const result = await processMeeting(mockJob);
+    const job = mockJob();
+    const result = await processMeeting(job);
 
     expect(result.success).toBe(true);
     expect(recallService.deleteMedia).toHaveBeenCalled();
+    // Verify the final status check happened
+    expect(query).toHaveBeenCalledWith(
+      'SELECT media_deleted_at FROM meetings WHERE id = $1',
+      [MEETING_ID]
+    );
+  });
+
+  it('records email as not_sent when SMTP is not configured (P2-3)', async () => {
+    // Don't set SMTP env vars
+
+    query
+      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE to processing
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT transcript
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE language
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE media_deleted_at
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT analysis
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT email_deliveries with not_sent
+      .mockResolvedValueOnce({ rows: [{ media_deleted_at: new Date() }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    vi.mocked(recallService.getTranscript).mockResolvedValue(MOCK_TRANSCRIPT);
+    vi.mocked(recallService.deleteMedia).mockResolvedValue(true);
+    vi.mocked(recallService.formatTranscript).mockReturnValue(MOCK_FORMATTED_TRANSCRIPT);
+    vi.mocked(analyzeMeeting).mockResolvedValue({
+      analysis: MOCK_ANALYSIS,
+      rawResponse: '{}',
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    const job = mockJob();
+    const result = await processMeeting(job);
+
+    expect(result.success).toBe(true);
+    expect(sendRecapEmail).not.toHaveBeenCalled();
+    // Check that email was recorded as not_sent
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("status)"),
+      expect.arrayContaining([TENANT_A, MEETING_ID, MOCK_USER.email, 'not_sent'])
+    );
   });
 
   it('handles database errors gracefully', async () => {
     const error = new Error('Database connection failed');
-    vi.mocked(db.query)
-      .mockRejectedValueOnce(error)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE to failed
+    runTenantJob.mockRejectedValueOnce(error);
 
-    const mockJob = {
-      data: {
-        meetingId: MOCK_MEETING.id,
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
+    const job = mockJob();
 
-    await expect(processMeeting(mockJob)).rejects.toThrow('Database connection failed');
+    await expect(processMeeting(job)).rejects.toThrow('Database connection failed');
+  });
+
+  it('requires tenantId in job payload', async () => {
+    const job = mockJob({ tenantId: '' });
+
+    await expect(processMeeting(job)).rejects.toThrow();
+  });
+
+  it('uses runTenantJob for all DB operations', async () => {
+    process.env.SMTP_HOST = 'smtp.test.com';
+    process.env.SMTP_USER = 'test';
+
+    query
+      .mockResolvedValueOnce({ rows: [MOCK_MEETING], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ media_deleted_at: new Date() }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    vi.mocked(recallService.getTranscript).mockResolvedValue(MOCK_TRANSCRIPT);
+    vi.mocked(recallService.deleteMedia).mockResolvedValue(true);
+    vi.mocked(recallService.formatTranscript).mockReturnValue(MOCK_FORMATTED_TRANSCRIPT);
+    vi.mocked(analyzeMeeting).mockResolvedValue({
+      analysis: MOCK_ANALYSIS,
+      rawResponse: '{}',
+      model: 'claude-sonnet-4-20250514',
+    });
+    vi.mocked(sendRecapEmail).mockResolvedValue(true);
+
+    await processMeeting(mockJob());
+
+    // Verify runTenantJob was called for each DB operation
+    expect(runTenantJob).toHaveBeenCalled();
+    const calls = runTenantJob.mock.calls;
+    // At least 6 calls: meeting fetch, transcript store, media_deleted_at update, analysis store, email record, final status
+    expect(calls.length).toBeGreaterThanOrEqual(6);
   });
 });

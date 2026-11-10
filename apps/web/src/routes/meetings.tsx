@@ -19,7 +19,7 @@ export function MeetingsPage() {
     async function fetchMeetings() {
       setLoadingState('loading');
       try {
-        const res = await fetch('/api/meetings');
+        const res = await fetch('/api/v1/meetings', { credentials: 'include' });
         if (!res.ok) {
           throw new Error('Failed to fetch meetings');
         }
@@ -54,7 +54,7 @@ export function MeetingsPage() {
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-        <h1 className="text-2xl font-bold text-white">Meetings</h1>
+        <h1 className="text-2xl font-semibold text-[var(--color-fg)]">Meetings</h1>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
           <input
@@ -62,7 +62,7 @@ export function MeetingsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search meetings..."
-            className="bg-gray-900 border border-gray-700 rounded-lg pl-10 pr-4 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full sm:w-64"
+            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-10 pr-4 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-fg)] sm:w-64"
           />
         </div>
       </div>
@@ -72,10 +72,10 @@ export function MeetingsPage() {
           <button
             key={f}
             onClick={() => setActiveFilter(f)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium ${
               activeFilter === f
-                ? 'bg-indigo-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:text-white'
+                ? 'bg-[var(--color-fg)] text-[var(--color-surface)]'
+                : 'border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-muted)] hover:text-[var(--color-fg)]'
             }`}
           >
             {f}
@@ -94,8 +94,8 @@ export function MeetingsPage() {
       {loadingState === 'error' && (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-          <p className="text-red-400 font-medium mb-2">Failed to load meetings</p>
-          <p className="text-gray-500 text-sm">{error}</p>
+          <p className="mb-2 font-medium text-[var(--color-danger)]">Failed to load meetings</p>
+          <p className="text-sm text-[var(--color-muted)]">{error}</p>
           <button
             onClick={() => window.location.reload()}
             className="mt-4 btn-primary text-sm"
@@ -109,8 +109,8 @@ export function MeetingsPage() {
       {loadingState === 'success' && filtered.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <Calendar className="w-12 h-12 text-gray-600 mb-4" />
-          <p className="text-gray-400 font-medium mb-2">No meetings found</p>
-          <p className="text-gray-500 text-sm">
+          <p className="mb-2 font-medium text-[var(--color-fg)]">No meetings found</p>
+          <p className="text-sm text-[var(--color-muted)]">
             {search ? 'Try a different search term' : 'Your meetings will appear here'}
           </p>
         </div>

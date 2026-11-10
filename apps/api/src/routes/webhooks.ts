@@ -1,199 +1,236 @@
 /**
  * Webhook routes
  * P0-5: Svix-style signature verification. Invalid/unsigned webhooks get 400.
+ * P1-2: Atomic dedupe via webhookInsertEvent (INSERT...ON CONFLICT RETURNING).
+ * P1-3: Fail closed - never skip verification, require secret at startup.
+ * P2-1: Persist event before acking; return non-2xx on failure.
+ * P2-2: Require event ID header, reject when missing.
+ * 
+ * Integration with PR #6:
+ *   - resolveMeetingTenant(...) → 400 TENANT_MISMATCH on claimed/stored mismatch
+ *   - webhookInsertEvent / webhookMarkProcessed (not direct SELECT/INSERT)
+ *   - withTenant(resolved.tenant_id, ...) for every meeting row touch
  */
 
-import { Router, type Request, type Response, type NextFunction } from 'express';
+import { Router, type Request, type Response } from 'express';
+import express from 'express';
 import { verifyWebhookSignature, requireWebhookSecret } from '../services/webhook-verify.js';
-import { db } from '../lib/db.js';
+import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
+import { sendError } from '../lib/http-error.js';
 import { RECALL_EVENT_TO_STATUS } from '@meeting-assistant/shared';
+import {
+  parseRecallWebhookCorrelation,
+  resolveMeetingTenant,
+  webhookInsertEvent,
+  webhookMarkProcessed,
+} from '../lib/tenant-lookup.js';
+import { queueMeetingProcessing } from '../lib/queue.js';
 
 export const webhooksRouter = Router();
 
-// Raw body middleware for signature verification
-webhooksRouter.use('/recall', (req: Request, res: Response, next: NextFunction) => {
-  let rawBody = '';
-  req.setEncoding('utf8');
-  
-  req.on('data', (chunk: string) => {
-    rawBody += chunk;
-  });
-  
-  req.on('end', () => {
-    (req as Request & { rawBody: string }).rawBody = rawBody;
-    try {
-      req.body = JSON.parse(rawBody);
-    } catch {
-      req.body = {};
+/**
+ * P1-1: Mount express.raw BEFORE global JSON parser to capture raw body for signature verification.
+ * The main app must NOT mount express.json() before this route.
+ */
+webhooksRouter.use(
+  '/recall',
+  express.raw({ type: '*/*', limit: '10mb' }),
+  (req: Request, _res: Response, next) => {
+    // Store raw body for signature verification
+    if (Buffer.isBuffer(req.body)) {
+      (req as Request & { rawBody: string }).rawBody = req.body.toString('utf8');
+      try {
+        req.body = JSON.parse((req as Request & { rawBody: string }).rawBody);
+      } catch {
+        req.body = {};
+      }
     }
     next();
-  });
-});
+  }
+);
 
 /**
  * POST /webhooks/recall
- * Recall.ai webhook endpoint with Svix signature verification
+ * Recall.ai webhook endpoint with Svix signature verification.
+ * 
+ * Flow:
+ * 1. Verify signature (fail-closed, 400 on invalid)
+ * 2. Extract and validate event ID header (required, P2-2)
+ * 3. Resolve tenant (400 on mismatch)
+ * 4. Atomic insert event (dedupe, skip if duplicate)
+ * 5. Process event under withTenant
+ * 6. Mark processed
+ * 7. ACK with 200
  */
 webhooksRouter.post('/recall', async (req: Request & { rawBody?: string }, res: Response) => {
+  // P1-3: Fail closed - requireWebhookSecret throws at startup if not configured
   const secret = requireWebhookSecret();
 
-  // Verify signature if secret is configured
-  if (secret) {
-    const headers = {
-      'svix-id': req.headers['svix-id'] as string,
-      'svix-timestamp': req.headers['svix-timestamp'] as string,
-      'svix-signature': req.headers['svix-signature'] as string,
-      'webhook-id': req.headers['webhook-id'] as string,
-      'webhook-timestamp': req.headers['webhook-timestamp'] as string,
-      'webhook-signature': req.headers['webhook-signature'] as string,
-    };
+  // Step 1: Verify signature (always, fail-closed)
+  const headers = {
+    'svix-id': req.headers['svix-id'] as string,
+    'svix-timestamp': req.headers['svix-timestamp'] as string,
+    'svix-signature': req.headers['svix-signature'] as string,
+    'webhook-id': req.headers['webhook-id'] as string,
+    'webhook-timestamp': req.headers['webhook-timestamp'] as string,
+    'webhook-signature': req.headers['webhook-signature'] as string,
+  };
 
-    const result = verifyWebhookSignature(req.rawBody || '', headers, secret);
+  const result = verifyWebhookSignature(req.rawBody || '', headers, secret);
 
-    if (!result.valid) {
-      logger.warn({ error: result.error }, 'Webhook signature verification failed');
-      return res.status(400).json({ error: result.error });
-    }
+  if (!result.valid) {
+    logger.warn({ error: result.error }, 'Webhook signature verification failed');
+    return res.status(400).json({ error: result.error });
   }
 
-  // Always respond 200 immediately to prevent retries
-  res.status(200).json({ received: true });
+  // Step 2: P2-2 - Require event ID header, reject when missing
+  const eventId = headers['svix-id'] || headers['webhook-id'];
+  if (!eventId) {
+    logger.warn({}, 'Webhook missing event ID header');
+    return res.status(400).json({ error: 'Missing event ID header (svix-id or webhook-id)' });
+  }
 
-  const payload = req.body;
-  const event = payload.event;
-  const botId = payload.data?.bot?.id;
+  const correlation = parseRecallWebhookCorrelation(req.body);
+  const { recallBotId, event } = correlation;
 
-  if (!botId) {
+  if (!recallBotId) {
     logger.warn({ event }, 'Webhook received without bot ID');
-    return;
+    return res.status(400).json({ error: 'Missing bot ID in payload' });
   }
 
-  // Get event ID for idempotency
-  const eventId = req.headers['svix-id'] as string || 
-                  req.headers['webhook-id'] as string ||
-                  `${botId}-${event}-${Date.now()}`;
+  if (!event) {
+    logger.warn({ botId: recallBotId }, 'Webhook received without event type');
+    return res.status(400).json({ error: 'Missing event type in payload' });
+  }
 
-  try {
-    // Check for duplicate (DB idempotency)
-    const existing = await db.query(
-      `SELECT id FROM webhook_events 
-       WHERE recall_bot_id = $1 AND event_type = $2 AND event_id = $3`,
-      [botId, event, eventId]
-    );
+  // Step 3: Resolve tenant
+  const resolved = await resolveMeetingTenant({
+    recallBotId: correlation.recallBotId,
+    claimedTenantId: correlation.claimedTenantId,
+    claimedMeetingId: correlation.claimedMeetingId,
+  });
 
-    if (existing.rows.length > 0) {
-      logger.info({ botId, event, eventId }, 'Duplicate webhook, skipping');
+  if (!resolved.ok) {
+    if (resolved.code === 'TENANT_MISMATCH') {
+      logger.warn({ botId: recallBotId, event }, 'Webhook tenant mismatch');
+      sendError(res, 400, 'TENANT_MISMATCH', 'Webhook tenant does not match meeting');
       return;
     }
+    // NOT_FOUND is okay for some events (e.g., bot creation)
+    logger.debug({ botId: recallBotId, event }, 'Meeting not found for webhook');
+  }
 
-    // Record webhook event for idempotency
-    await db.query(
-      `INSERT INTO webhook_events (recall_bot_id, event_type, event_id, payload)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (recall_bot_id, event_type, event_id) DO NOTHING`,
-      [botId, event, eventId, JSON.stringify(payload)]
+  try {
+    // Step 4: P1-2 Atomic insert (dedupe) - returns false if duplicate
+    const isNew = await webhookInsertEvent(
+      recallBotId,
+      event,
+      eventId,
+      req.body ?? {}
     );
 
-    logger.info({ event, botId }, 'Processing webhook');
-
-    // Handle different event types
-    switch (event) {
-      case 'bot.status_change':
-        await handleStatusChange(payload);
-        break;
-      
-      case 'bot.recording_permission_denied':
-        await handleConsentDenied(payload);
-        break;
-
-      case 'bot.done':
-      case 'bot.call_ended':
-        await handleCallEnded(payload);
-        break;
-
-      default:
-        logger.debug({ event }, 'Unhandled webhook event type');
+    if (!isNew) {
+      // Duplicate event - skip processing but still ACK
+      logger.info({ botId: recallBotId, event, eventId }, 'Duplicate webhook, skipping');
+      return res.status(200).json({ received: true, duplicate: true });
     }
 
-    // Mark as processed
-    await db.query(
-      `UPDATE webhook_events SET processed_at = NOW() 
-       WHERE recall_bot_id = $1 AND event_type = $2 AND event_id = $3`,
-      [botId, event, eventId]
-    );
+    logger.info({ event, botId: recallBotId, eventId }, 'Processing webhook');
+
+    // Step 5: Process event under tenant context
+    if (resolved.ok) {
+      await withTenant(resolved.tenant_id, async (client) => {
+        switch (event) {
+          case 'bot.status_change':
+            await handleStatusChange(client, req.body, resolved.meeting_id);
+            break;
+
+          case 'bot.recording_permission_denied':
+            await handleConsentDenied(client, resolved.meeting_id, recallBotId);
+            break;
+
+          case 'bot.done':
+          case 'bot.call_ended':
+            await handleCallEnded(client, resolved.meeting_id, recallBotId, resolved.tenant_id);
+            break;
+
+          default:
+            logger.debug({ event }, 'Unhandled webhook event type');
+        }
+      });
+    }
+
+    // Step 6: Mark as processed
+    await webhookMarkProcessed(recallBotId, event, eventId);
+
+    // Step 7: ACK
+    return res.status(200).json({ received: true });
 
   } catch (err) {
-    logger.error({ err, event, botId }, 'Error processing webhook');
+    // P2-1: Return non-2xx on failure so Recall retries
+    logger.error({ err, event, botId: recallBotId, eventId }, 'Error processing webhook');
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-async function handleStatusChange(payload: Record<string, unknown>): Promise<void> {
+interface DbClient {
+  query: <T>(text: string, params?: unknown[]) => Promise<{ rows: T[]; rowCount: number | null }>;
+}
+
+async function handleStatusChange(
+  client: DbClient,
+  payload: Record<string, unknown>,
+  meetingId: string
+): Promise<void> {
   const data = payload.data as Record<string, unknown>;
   const bot = data?.bot as Record<string, unknown>;
   const botId = bot?.id as string;
   const statusChanges = bot?.status_changes as Array<{ code: string }>;
-  const metadata = bot?.metadata as Record<string, string>;
 
   if (!statusChanges?.length) return;
 
   const latestStatus = statusChanges[statusChanges.length - 1].code;
   const dbStatus = RECALL_EVENT_TO_STATUS[latestStatus] || latestStatus;
-  const meetingId = metadata?.internal_meeting_id;
 
-  if (meetingId) {
-    await db.query(
-      `UPDATE meetings 
-       SET status = $1, recall_bot_id = $2, updated_at = NOW() 
-       WHERE id = $3`,
-      [dbStatus, botId, meetingId]
-    );
-    logger.info({ meetingId, status: dbStatus }, 'Meeting status updated');
-  }
+  await client.query(
+    `UPDATE meetings 
+     SET status = $1, recall_bot_id = $2, updated_at = NOW() 
+     WHERE id = $3`,
+    [dbStatus, botId, meetingId]
+  );
+  logger.info({ meetingId, status: dbStatus }, 'Meeting status updated');
 }
 
-async function handleConsentDenied(payload: Record<string, unknown>): Promise<void> {
-  const data = payload.data as Record<string, unknown>;
-  const bot = data?.bot as Record<string, unknown>;
-  const botId = bot?.id as string;
-  const metadata = bot?.metadata as Record<string, string>;
-  const meetingId = metadata?.internal_meeting_id;
-
-  if (meetingId) {
-    await db.query(
-      `UPDATE meetings 
-       SET status = 'consent_denied', updated_at = NOW() 
-       WHERE id = $1`,
-      [meetingId]
-    );
-    logger.info({ meetingId, botId }, 'Meeting marked consent_denied');
-  }
+async function handleConsentDenied(
+  client: DbClient,
+  meetingId: string,
+  botId: string
+): Promise<void> {
+  await client.query(
+    `UPDATE meetings 
+     SET status = 'consent_denied', updated_at = NOW() 
+     WHERE id = $1`,
+    [meetingId]
+  );
+  logger.info({ meetingId, botId }, 'Meeting marked consent_denied');
 }
 
-async function handleCallEnded(payload: Record<string, unknown>): Promise<void> {
-  const data = payload.data as Record<string, unknown>;
-  const bot = data?.bot as Record<string, unknown>;
-  const botId = bot?.id as string;
-  const metadata = bot?.metadata as Record<string, string>;
-  const meetingId = metadata?.internal_meeting_id;
-
-  if (!meetingId) {
-    const result = await db.query<{ id: string }>(
-      'SELECT id FROM meetings WHERE recall_bot_id = $1',
-      [botId]
-    );
-    if (result.rows.length === 0) {
-      logger.warn({ botId }, 'No meeting found for bot');
-      return;
-    }
-  }
-
-  await db.query(
+async function handleCallEnded(
+  client: DbClient,
+  meetingId: string,
+  botId: string,
+  tenantId: string
+): Promise<void> {
+  await client.query(
     `UPDATE meetings 
      SET status = 'processing', updated_at = NOW() 
-     WHERE id = $1 OR recall_bot_id = $2`,
-    [meetingId, botId]
+     WHERE id = $1`,
+    [meetingId]
   );
 
-  logger.info({ meetingId, botId }, 'Call ended, ready for processing');
+  // P1-6: Enqueue process-meeting job with jobId for dedupe
+  await queueMeetingProcessing(meetingId, botId, tenantId);
+
+  logger.info({ meetingId, botId }, 'Call ended, enqueued for processing');
 }
