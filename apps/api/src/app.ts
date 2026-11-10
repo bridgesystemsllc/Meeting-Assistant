@@ -13,6 +13,7 @@ import { meetingsRouter } from './routes/meetings.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { authRouter } from './routes/auth.js';
 import { meRouter } from './routes/me.js';
+import { tenantRouter } from './routes/tenant.js';
 import { errorHandler } from './middleware/errors.js';
 import { v1AuthGuard } from './middleware/auth.js';
 
@@ -37,6 +38,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/auth', authRouter);
   app.use(v1AuthGuard);
   app.use('/api/v1/me', meRouter);
+  app.use('/api/v1/tenant', tenantRouter);
   app.use('/api/v1/meetings', meetingsRouter);
 
   app.use((_req, res) => {

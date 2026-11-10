@@ -18,7 +18,9 @@ vi.mock('../hooks/useAuth', () => ({
         slug: 'acme-notes',
       },
       role: 'owner',
+      seat_status: 'active',
       memberships: [],
+      seats: { seat_limit: 10, seats_used: 4 },
     },
     error: null,
     refresh: vi.fn(),
@@ -35,5 +37,6 @@ describe('Layout', () => {
     );
 
     expect(screen.getByTestId('tenant-display-name').textContent).toBe('Acme Notes');
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
   });
 });

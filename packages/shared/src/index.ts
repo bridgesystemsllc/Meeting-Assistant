@@ -11,3 +11,4 @@ export * from './db-tables.js';
 export * from './brand-voice.js';
 export * from './auth.js';
 export * from './email.js';
+export * from './tenant.js';

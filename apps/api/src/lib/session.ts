@@ -66,16 +66,20 @@ export async function revokeSession(token: string | undefined): Promise<string> 
 }
 
 export function toMeResponse(ctx: AuthSessionContext): MeResponse | null {
-  const active = ctx.memberships.filter((m) => m.seat_status === 'active');
-  if (active.length === 0) return null;
+  if (ctx.memberships.length === 0) return null;
 
+  const active = ctx.memberships.filter((m) => m.seat_status === 'active');
   const selected =
-    active.find((m) => m.tenant.id === ctx.active_tenant_id) ?? active[0];
+    active.find((m) => m.tenant.id === ctx.active_tenant_id) ??
+    active[0] ??
+    ctx.memberships.find((m) => m.tenant.id === ctx.active_tenant_id) ??
+    ctx.memberships[0];
 
   return {
     user: ctx.user,
     tenant: selected.tenant,
     role: selected.role,
+    seat_status: selected.seat_status,
     memberships: ctx.memberships,
   };
 }

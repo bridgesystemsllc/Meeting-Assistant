@@ -7,6 +7,7 @@ import { logger } from '../lib/logger.js';
 import {
   acceptInvite,
   consumeOidcState,
+  lookupInvite,
   membershipsForEmail,
   storeOidcState,
   upsertUser,
@@ -30,6 +31,47 @@ function parseProvider(value: string): OidcProvider | null {
   const parsed = OidcProviderSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
+
+const INVITE_ERROR_QUERY: Record<string, string> = {
+  INVALID_INVITE: 'invalid_invite',
+  INVITE_USED: 'invite_used',
+  INVITE_EXPIRED: 'invite_expired',
+  INVITE_REVOKED: 'invite_revoked',
+  INVITE_WRONG_TENANT: 'invite_tenant',
+  INVITE_EMAIL_MISMATCH: 'invite_email',
+};
+
+authRouter.get('/invites/:token', async (req, res, next) => {
+  try {
+    const token = req.params.token;
+    if (!token) {
+      sendError(res, 400, 'INVALID_INVITE', 'That invite link is invalid.');
+      return;
+    }
+    const slug = typeof req.query.tenant === 'string' ? req.query.tenant : null;
+    const found = await lookupInvite(hashToken(token), slug);
+    if (!found.ok) {
+      const code = found.code ?? 'INVALID_INVITE';
+      const messages: Record<string, string> = {
+        INVALID_INVITE: 'That invite link is invalid.',
+        INVITE_USED: 'That invite link has already been used.',
+        INVITE_EXPIRED: 'That invite link has expired.',
+        INVITE_REVOKED: 'That invite was revoked.',
+        INVITE_WRONG_TENANT: 'That invite belongs to a different workspace.',
+      };
+      sendError(res, 400, code, messages[code] ?? messages.INVALID_INVITE);
+      return;
+    }
+    res.json({
+      email: found.email,
+      role: found.role,
+      expires_at: found.expires_at,
+      tenant: found.tenant,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 authRouter.get('/login/:provider', async (req, res, next) => {
   try {
@@ -118,25 +160,26 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 
     if (stored.invite_token_hash) {
       const accepted = await acceptInvite(stored.invite_token_hash, user.id, user.email);
-      if (accepted.ok) {
-        memberships = await membershipsForEmail(user.email);
-      } else if (memberships.filter((m) => m.seat_status === 'active').length === 0) {
+      if (!accepted.ok) {
         logger.info({ code: accepted.code }, 'invite acceptance failed');
-        redirectToLogin(res, accepted.code === 'INVITE_EMAIL_MISMATCH' ? 'invite_email' : 'invalid_invite');
+        redirectToLogin(res, INVITE_ERROR_QUERY[accepted.code ?? 'INVALID_INVITE'] ?? 'invalid_invite');
         return;
       }
+      memberships = await membershipsForEmail(user.email);
     }
 
-    const active = memberships.filter((m) => m.seat_status === 'active');
-    if (active.length === 0) {
+    if (memberships.length === 0) {
       redirectToLogin(res, 'no_access');
       return;
     }
 
+    const active = memberships.filter((m) => m.seat_status === 'active');
+    const selected = active[0] ?? memberships[0];
+
     const previous = readSessionToken(req.cookies);
     const session = await issueSession({
       userId: user.id,
-      activeTenantId: active[0].tenant.id,
+      activeTenantId: selected.tenant.id,
       previousToken: previous,
     });
     res.setHeader('Set-Cookie', session.setCookie);
