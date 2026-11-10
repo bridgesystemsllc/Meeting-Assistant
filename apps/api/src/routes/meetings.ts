@@ -133,6 +133,93 @@ meetingsRouter.get('/:id', async (req, res) => {
 });
 
 /**
+ * POST /api/v1/meetings
+ * P1-6: Create a meeting and dispatch a Recall bot to join.
+ * The bot is created via Recall API and tracked by recall_bot_id.
+ */
+meetingsRouter.post('/', async (req, res) => {
+  const tenantId = requireTenantId(req);
+  if (!tenantId) {
+    unauthenticated(res);
+    return;
+  }
+
+  const { meeting_url, title, platform } = req.body;
+
+  if (!meeting_url) {
+    res.status(400).json({ error: { code: 'MISSING_FIELD', message: 'meeting_url is required' } });
+    return;
+  }
+
+  const userId = req.auth?.user.id;
+  if (!userId) {
+    unauthenticated(res);
+    return;
+  }
+
+  try {
+    // Import recall service dynamically to support mocking in tests
+    const { recallService } = await import('../services/recall.js');
+    
+    // Create meeting record first
+    const meeting = await withTenant(tenantId, async (client) => {
+      const result = await client.query<{
+        id: string;
+        title: string;
+        platform: string;
+        status: string;
+      }>(
+        `INSERT INTO meetings (tenant_id, user_id, title, platform, meeting_url, status)
+         VALUES ($1, $2, $3, $4, $5, 'pending')
+         RETURNING id, title, platform, status`,
+        [tenantId, userId, title || 'Untitled Meeting', platform || detectPlatform(meeting_url), meeting_url]
+      );
+      return result.rows[0];
+    });
+
+    // Create and send Recall bot
+    const botName = process.env.BOT_NAME || 'Meeting Assistant';
+    const bot = await recallService.createBot({
+      meetingUrl: meeting_url,
+      botName,
+      meetingId: meeting.id,
+      tenantId,
+    });
+
+    // Update meeting with bot ID
+    await withTenant(tenantId, (client) =>
+      client.query(
+        `UPDATE meetings SET recall_bot_id = $1, status = 'joining', updated_at = NOW() WHERE id = $2`,
+        [bot.id, meeting.id]
+      )
+    );
+
+    logger.info({ meetingId: meeting.id, botId: bot.id }, 'Meeting created with bot dispatched');
+
+    res.status(201).json({
+      meeting: {
+        id: meeting.id,
+        title: meeting.title,
+        platform: meeting.platform,
+        status: 'joining',
+        recall_bot_id: bot.id,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to create meeting');
+    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to create meeting' } });
+  }
+});
+
+function detectPlatform(url: string): string {
+  if (url.includes('zoom.us')) return 'zoom';
+  if (url.includes('teams.microsoft.com') || url.includes('teams.live.com')) return 'teams';
+  if (url.includes('meet.google.com')) return 'meet';
+  if (url.includes('webex.com')) return 'webex';
+  return 'unknown';
+}
+
+/**
  * DELETE /api/v1/meetings/:id
  * Cross-tenant → 404. Write isolation is enforced by RLS WITH CHECK / USING.
  */

@@ -67,13 +67,16 @@ export const recallService = {
 
     logger.info({ meetingUrl: meetingUrl.substring(0, 50), meetingId }, 'Creating Recall bot');
 
+    // P1-5: Use recallai_streaming for multi-language support (not meeting_captions which is English-only)
     const payload = {
       meeting_url: meetingUrl,
       bot_name: botName,
       recording_config: {
         transcript: {
           provider: {
-            meeting_captions: {},
+            recallai_streaming: {
+              language_code: 'auto', // Auto-detect language
+            },
           },
         },
       },

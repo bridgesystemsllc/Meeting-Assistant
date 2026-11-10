@@ -26,6 +26,12 @@ export function createApp(): express.Express {
     credentials: true,
   }));
   app.use(morgan('combined'));
+
+  // P1-1: Mount webhooks BEFORE express.json() to allow raw body capture for signature verification
+  // The webhooks router has its own body parsing middleware (express.raw)
+  app.use('/webhooks', webhooksRouter);
+
+  // Now mount JSON parser for all other routes
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use((req, _res, next) => {
@@ -34,7 +40,6 @@ export function createApp(): express.Express {
   });
 
   app.use('/health', healthRouter);
-  app.use('/webhooks', webhooksRouter);
   app.use('/api/v1/auth', authRouter);
   app.use(v1AuthGuard);
   app.use('/api/v1/me', meRouter);

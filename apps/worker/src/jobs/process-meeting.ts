@@ -238,6 +238,7 @@ export async function processMeeting(
           analysis,
           ownerEmail: owner.email,
           ownerName: owner.name || undefined,
+          ownerId: owner.id, // P3-2: Pass user id for logging (not email)
           language: formattedTranscript.language,
         });
 
