@@ -199,27 +199,31 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
     }
 
     const memberships = resolved.memberships ?? [];
+    // An invite in the login state always reports its outcome. A used/expired
+    // link must not silently succeed just because the user already has a seat.
     if (stored.invite_token_hash && resolved.invite && !resolved.invite.ok) {
-      if (memberships.filter((m) => m.seat_status === 'active').length === 0) {
-        logger.info({ code: resolved.invite.code }, 'invite acceptance failed');
-        redirectToLogin(
-          res,
-          INVITE_ERROR_QUERY[resolved.invite.code ?? 'INVALID_INVITE'] ?? 'invalid_invite'
-        );
-        return;
-      }
-    }
-
-    const active = memberships.filter((m) => m.seat_status === 'active');
-    if (active.length === 0) {
-      redirectToLogin(res, memberships.length > 0 ? 'seat_inactive' : 'no_access');
+      logger.info({ code: resolved.invite.code }, 'invite acceptance failed');
+      redirectToLogin(
+        res,
+        INVITE_ERROR_QUERY[resolved.invite.code ?? 'INVALID_INVITE'] ?? 'invalid_invite'
+      );
       return;
     }
+
+    if (memberships.length === 0) {
+      redirectToLogin(res, 'no_access');
+      return;
+    }
+
+    // Invited / deactivated members still get a session so /me can show
+    // status and requireActiveSeat can return 403 SEAT_INACTIVE (ATLAS Q11).
+    const active = memberships.filter((m) => m.seat_status === 'active');
+    const selected = active[0] ?? memberships[0];
 
     const previous = readSessionToken(req.cookies);
     const session = await issueSession({
       userId: resolved.user.id,
-      activeTenantId: active[0].tenant.id,
+      activeTenantId: selected.tenant.id,
       previousToken: previous,
     });
 
