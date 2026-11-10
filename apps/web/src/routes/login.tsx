@@ -15,6 +15,8 @@ const ERROR_COPY: Record<string, string> = {
   invite_email: 'That invite was issued to a different email.',
   seat_limit: 'All seats are in use. Ask your admin.',
   member_deactivated: 'This seat is deactivated. Ask your admin to reactivate it.',
+  already_member: 'This person already has a seat.',
+  last_owner: 'The last active owner cannot be changed this way.',
   unverified: 'That email is not verified with the identity provider.',
   oidc: 'Sign-in failed. Try again.',
 };

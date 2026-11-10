@@ -5,9 +5,16 @@ type MorganTokens = Record<
   ((req: Request, res: Response, arg?: string) => string | undefined) | undefined
 >;
 
-/** Combined-style access log without query strings or Referer (invite tokens, code, state). */
+/** Combined-style access log without query strings, path tokens, or Referer. */
+export function redactAccessLogUrl(raw: string): string {
+  const pathOnly = raw.split('?')[0];
+  return pathOnly
+    .replace(/(\/api\/v1\/auth\/invites\/)[^/]+/gi, '$1[redacted]')
+    .replace(/(\/invite\/)[^/]+/gi, '$1[redacted]');
+}
+
 export function accessLogLine(tokens: MorganTokens, req: Request, res: Response): string {
-  const url = (tokens.url?.(req, res) ?? '').split('?')[0];
+  const url = redactAccessLogUrl(tokens.url?.(req, res) ?? '');
   return [
     tokens['remote-addr']?.(req, res),
     '-',

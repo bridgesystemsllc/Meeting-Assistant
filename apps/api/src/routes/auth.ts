@@ -57,6 +57,8 @@ const INVITE_ERROR_QUERY: Record<string, string> = {
   INVITE_EMAIL_MISMATCH: 'invite_email',
   SEAT_LIMIT_REACHED: 'seat_limit',
   MEMBER_DEACTIVATED: 'member_deactivated',
+  ALREADY_MEMBER: 'already_member',
+  LAST_OWNER: 'last_owner',
   EMAIL_UNVERIFIED: 'unverified',
 };
 

@@ -3,6 +3,7 @@
  */
 
 import type { ErrorRequestHandler } from 'express';
+import { redactAccessLogUrl } from '../lib/access-log.js';
 import { logger } from '../lib/logger.js';
 import { HttpError } from '../lib/http-error.js';
 
@@ -10,7 +11,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   logger.error(
     {
       err,
-      path: req.path,
+      path: redactAccessLogUrl(req.path || req.originalUrl || ''),
       method: req.method,
     },
     'Unhandled error'

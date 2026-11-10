@@ -35,6 +35,12 @@ describe('email adapter', () => {
     expect(createEmailAdapter().transport).toBe('smtp');
   });
 
+  it('allows the log transport in development without SMTP_HOST', () => {
+    delete process.env.SMTP_HOST;
+    process.env.NODE_ENV = 'development';
+    expect(createEmailAdapter().transport).toBe('log');
+  });
+
   it('log transport does not log acceptUrl or the raw token', async () => {
     const spy = vi.spyOn(logger, 'info');
     const acceptUrl = 'http://localhost:5173/invite/raw-token-value?tenant=acme-notes';
