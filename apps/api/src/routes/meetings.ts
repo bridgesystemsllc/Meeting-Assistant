@@ -194,7 +194,13 @@ meetingsRouter.delete('/:id', async (req, res) => {
       if (!privileged && !meetingOwner) {
         return 'forbidden' as const;
       }
-      await client.query('DELETE FROM meetings WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+      const removed = await client.query('DELETE FROM meetings WHERE id = $1 AND tenant_id = $2', [
+        id,
+        tenantId,
+      ]);
+      if (!removed.rowCount) {
+        return 'missing' as const;
+      }
       return 'deleted' as const;
     });
 
