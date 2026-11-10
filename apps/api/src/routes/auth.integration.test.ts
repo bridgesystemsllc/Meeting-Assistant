@@ -13,6 +13,7 @@ import { resetPools, withTenant, getAppPool } from '../lib/db.js';
 import { clearOidcCache } from '../lib/oidc.js';
 
 const ACME_TENANT = '00000000-0000-0000-0000-000000000010';
+const ACME_MEMBER = '00000000-0000-0000-0000-000000000013';
 const T2 = '00000000-0000-0000-0000-000000000030';
 const B1 = '00000000-0000-0000-0000-000000000031';
 const T2_MEETING = '00000000-0000-0000-0000-000000000032';
@@ -214,6 +215,71 @@ describe('auth integration', () => {
     expect(done.status).toBe(302);
     expect(done.headers.location).toMatch(/error=no_access/);
     expect(String(done.headers['set-cookie'] ?? '')).not.toMatch(/ma_session=/);
+  });
+
+  it('lets an active member use meetings', async () => {
+    clearOidcCache();
+    configureMockUser(stack.mockOidc, { email: 'member@example.com', name: 'Morgan Member' });
+    const agent = request.agent(`http://127.0.0.1:${apiPort}`);
+    const done = await finishOidc(agent, 'google');
+    expect(done.status).toBe(302);
+    expect(String(done.headers['set-cookie'] ?? '')).toMatch(/ma_session=/);
+
+    const me = await agent.get('/api/v1/me');
+    expect(me.status).toBe(200);
+    expect(me.body.user.email).toBe('member@example.com');
+    expect(me.body.seat_status).toBe('active');
+
+    const meetings = await agent.get('/api/v1/meetings');
+    expect(meetings.status).toBe(200);
+  });
+
+  it('issues a session for a deactivated member and returns 403 SEAT_INACTIVE on guarded routes', async () => {
+    const owner = new pg.Client({ connectionString: stack.ownerUrl });
+    await owner.connect();
+    try {
+      await owner.query(`UPDATE memberships SET seat_status = 'deactivated' WHERE user_id = $1`, [
+        ACME_MEMBER,
+      ]);
+    } finally {
+      await owner.end();
+    }
+
+    try {
+      clearOidcCache();
+      configureMockUser(stack.mockOidc, { email: 'member@example.com', name: 'Morgan Member' });
+      const agent = request.agent(`http://127.0.0.1:${apiPort}`);
+      const done = await finishOidc(agent, 'google');
+      expect(done.status).toBe(302);
+      expect(done.headers.location).not.toMatch(/error=/);
+      expect(String(done.headers['set-cookie'] ?? '')).toMatch(/ma_session=/);
+
+      const me = await agent.get('/api/v1/me');
+      expect(me.status).toBe(200);
+      expect(me.body.user.email).toBe('member@example.com');
+      expect(me.body.seat_status).toBe('deactivated');
+
+      const meetings = await agent.get('/api/v1/meetings');
+      expect(meetings.status).toBe(403);
+      expect(meetings.body.error).toEqual({
+        code: 'SEAT_INACTIVE',
+        message: 'Your seat is inactive. Ask your admin.',
+      });
+
+      const tenant = await agent.get('/api/v1/tenant/seats');
+      expect(tenant.status).toBe(403);
+      expect(tenant.body.error.code).toBe('SEAT_INACTIVE');
+    } finally {
+      const restore = new pg.Client({ connectionString: stack.ownerUrl });
+      await restore.connect();
+      try {
+        await restore.query(`UPDATE memberships SET seat_status = 'active' WHERE user_id = $1`, [
+          ACME_MEMBER,
+        ]);
+      } finally {
+        await restore.end();
+      }
+    }
   });
 
   it('fails closed on unverified-email account takeover (SONAR P1)', async () => {
