@@ -123,21 +123,21 @@ Fake company logos/stats in:
 
 ---
 
-### P0-8: No "KarEve" strings; no hardcoded owner name/email
+### P0-8: No "[BRAND]" strings; no hardcoded owner name/email
 
 **Status: REFUTED**
 
-**KarEve strings found:**
-- `frontend/lib/mock-data.ts:105`: `title: "KarEve Onboarding Call"`
-- `MeetingAssistant.jsx:75`: `title: "KarEve Onboarding Call"`
-- `docs/plans/2026-03-03-meeting-assistant-frontend-plan.md:429`: `title: "KarEve Onboarding Call"`
+**[BRAND] strings found (3 occurrences):**
+- `frontend/lib/mock-data.ts:105`
+- `MeetingAssistant.jsx:75`
+- `docs/plans/2026-03-03-meeting-assistant-frontend-plan.md:429`
 
-**Hardcoded owner name/email found:**
-- `frontend/app/(dashboard)/settings/page.tsx:6-7`: hardcoded owner name/email
-- `frontend/components/dashboard/Sidebar.tsx:41`: hardcoded owner name
-- `frontend/lib/mock-data.ts:58,93`: "Ahmad" in speaker names
-- `MeetingAssistant.jsx:27,62`: "Ahmad" in speaker names
-- `docs/plans/2026-03-03-meeting-assistant-frontend-plan.md:382,417,1425,1664,2686-2687`: hardcoded owner name/email
+**Hardcoded owner name/email found (11 occurrences):**
+- `frontend/app/(dashboard)/settings/page.tsx:6-7`
+- `frontend/components/dashboard/Sidebar.tsx:41`
+- `frontend/lib/mock-data.ts:58,93`
+- `MeetingAssistant.jsx:27,62`
+- `docs/plans/2026-03-03-meeting-assistant-frontend-plan.md:382,417,1425,1664,2686-2687`
 
 ---
 
@@ -302,7 +302,7 @@ Schema: `data.data.sub_code` contains the denial reason
 | P0-5 | REFUTED | Yes - signature fix required |
 | P0-6 | REFUTED | Yes - consent required |
 | P0-7 | REFUTED | Yes - prices must be removed |
-| P0-8 | REFUTED | Yes - KarEve and owner strings must be scrubbed |
+| P0-8 | REFUTED | Yes - [BRAND] and owner strings must be scrubbed |
 
 ### Kill Criteria Check
 
@@ -314,7 +314,7 @@ Schema: `data.data.sub_code` contains the denial reason
 
 ### Recommendations
 
-1. **Security:** Enable GitHub secret scanning and push protection (Ahmad action)
-2. **Privacy:** Make repo private before adding any client data (Ahmad action)
+1. **Security:** Enable GitHub secret scanning and push protection (owner action)
+2. **Privacy:** Make repo private before adding any client data (owner action)
 3. **Dependencies:** Run `npm audit fix` and upgrade next to 16.4.6+
-4. **History:** Consider history rewrite to remove KarEve strings (Ahmad decision, destructive)
+4. **History:** Consider history rewrite to remove [BRAND] strings (owner decision, destructive)

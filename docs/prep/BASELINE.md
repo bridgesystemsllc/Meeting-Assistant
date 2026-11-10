@@ -237,11 +237,11 @@ Per spec §4 context list:
 10. `emailService.js` — Unescaped HTML, hardcoded "[PRODUCT NAME]" branding
 11. `db.js`, `logger.js` — pg pool (flat), winston file logs
 12. `schema.sql` — No tenancy, no RLS
-13. `frontend/lib/mock-data.ts` — Contains "KarEve" string
+13. `frontend/lib/mock-data.ts` — Contains "[BRAND]" string
 14. `frontend/app/(dashboard)/settings/page.tsx` — Hardcoded owner name/email
 15. `frontend/components/dashboard/Sidebar.tsx` — Hardcoded owner name
 16. `frontend/components/marketing/SocialProof.tsx` — Fake logos/stats
 17. `frontend/app/(marketing)/pricing/page.tsx` — Hardcoded prices
 18. `frontend/components/ui/Logo.tsx` — Static branding
-19. `MeetingAssistant.jsx` — Orphan prototype; contains "KarEve" string
-20. `docs/plans/*.md` — Design docs; contain KarEve, owner email, prices
+19. `MeetingAssistant.jsx` — Orphan prototype; contains "[BRAND]" string
+20. `docs/plans/*.md` — Design docs; contain [BRAND], owner email, prices

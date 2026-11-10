@@ -426,7 +426,7 @@ export const MOCK_MEETINGS: Meeting[] = [
   },
   {
     id: "3",
-    title: "KarEve Onboarding Call",
+    title: "Lumen & Vale Onboarding Call",
     platform: "zoom",
     started_at: "2026-03-02T09:00:00Z",
     duration_seconds: 5400,
