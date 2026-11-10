@@ -165,7 +165,9 @@ meetingsRouter.get('/:id', async (req, res) => {
 /**
  * DELETE /api/v1/meetings/:id
  * Cross-tenant → 404. Same-tenant member who is not admin/owner and not the
- * meeting owner → 403. Emits meeting.deleted in the same withTenant txn.
+ * meeting owner → 403. 204 and meeting.deleted only when DELETE rowCount is 1;
+ * concurrent authorized deletes yield one 204 and the rest 404. Audit and
+ * delete share the withTenant txn so an audit failure rolls the row back.
  */
 meetingsRouter.delete('/:id', async (req, res) => {
   const { id } = req.params;
@@ -183,7 +185,7 @@ meetingsRouter.delete('/:id', async (req, res) => {
   try {
     const deleted = await withTenant(tenantId, async (client) => {
       const existing = await client.query<{ id: string; user_id: string }>(
-        'SELECT id, user_id FROM meetings WHERE id = $1 AND tenant_id = $2',
+        'SELECT id, user_id FROM meetings WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
         [id, tenantId]
       );
       if (existing.rowCount === 0) {
@@ -194,7 +196,13 @@ meetingsRouter.delete('/:id', async (req, res) => {
       if (!privileged && !meetingOwner) {
         return 'forbidden' as const;
       }
-      await client.query('DELETE FROM meetings WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+      const removed = await client.query('DELETE FROM meetings WHERE id = $1 AND tenant_id = $2', [
+        id,
+        tenantId,
+      ]);
+      if (!removed.rowCount) {
+        return 'missing' as const;
+      }
       await recordAudit(client, {
         actorUserId: actor.user.id,
         action: 'meeting.deleted',

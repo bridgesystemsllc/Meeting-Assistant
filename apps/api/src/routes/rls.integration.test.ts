@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
@@ -474,5 +475,88 @@ describe('RLS tenant isolation', () => {
     expect(stillAcme.rowCount).toBe(1);
     const lumenStill = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [LUMEN_MEETING]);
     expect(lumenStill.rowCount).toBe(1);
+  });
+
+  it('concurrent deletes of the same meeting yield one 204, the rest 404, and one audit row', async () => {
+    const meetingId = randomUUID();
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'concurrent delete', 'zoom', 'https://zoom.us/j/9', 'completed')`,
+      [meetingId, ACME, ACME_OWNER]
+    );
+
+    process.env.PG_POOL_MAX = '8';
+    await resetPools();
+    try {
+      const [ownerCookie, adminCookie] = await Promise.all([
+        cookieFor(ACME_OWNER, ACME),
+        cookieFor(ACME_ADMIN, ACME),
+      ]);
+      const responses = await Promise.all([
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', ownerCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', adminCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', ownerCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', adminCookie),
+      ]);
+      const statuses = responses.map((r) => r.status).sort((a, b) => a - b);
+      expect(statuses).toEqual([204, 404, 404, 404]);
+      const notFoundBodies = responses.filter((r) => r.status === 404);
+      for (const res of notFoundBodies) {
+        expect(res.body.error.code).toBe('NOT_FOUND');
+      }
+      const gone = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [meetingId]);
+      expect(gone.rowCount).toBe(0);
+      const audits = await ownerQuery(
+        `SELECT id FROM audit_events WHERE action = 'meeting.deleted' AND target_id = $1`,
+        [meetingId]
+      );
+      expect(audits.rowCount).toBe(1);
+    } finally {
+      process.env.PG_POOL_MAX = '1';
+      await resetPools();
+    }
+  });
+
+  it('rolls back the meeting row when meeting.deleted audit fails', async () => {
+    const meetingId = randomUUID();
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'audit rollback', 'zoom', 'https://zoom.us/j/8', 'completed')`,
+      [meetingId, ACME, ACME_OWNER]
+    );
+    await ownerQuery(`
+      CREATE OR REPLACE FUNCTION audit_fail_meeting_deleted()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.action = 'meeting.deleted' THEN
+          RAISE EXCEPTION 'forced meeting.deleted audit failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await ownerQuery(`
+      DROP TRIGGER IF EXISTS audit_fail_meeting_deleted ON audit_events;
+      CREATE TRIGGER audit_fail_meeting_deleted
+        BEFORE INSERT ON audit_events
+        FOR EACH ROW EXECUTE FUNCTION audit_fail_meeting_deleted()
+    `);
+    try {
+      const cookie = await cookieFor(ACME_OWNER, ACME);
+      const res = await request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', cookie);
+      expect(res.status).toBe(500);
+      const still = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [meetingId]);
+      expect(still.rowCount).toBe(1);
+      const audits = await ownerQuery(
+        `SELECT id FROM audit_events WHERE action = 'meeting.deleted' AND target_id = $1`,
+        [meetingId]
+      );
+      expect(audits.rowCount).toBe(0);
+    } finally {
+      await ownerQuery('DROP TRIGGER IF EXISTS audit_fail_meeting_deleted ON audit_events');
+      await ownerQuery('DROP FUNCTION IF EXISTS audit_fail_meeting_deleted()');
+    }
   });
 });
