@@ -12,6 +12,7 @@ function restricted(overrides: Partial<AppRoleGuardRow> = {}): AppRoleGuardRow {
     rolbypassrls: false,
     owns_public_relation: false,
     owns_security_definer: false,
+    has_role_membership: false,
     member_of_table_owner: false,
     has_definer_access: false,
     has_nontenant_policy: false,
@@ -97,6 +98,12 @@ describe('assertRestrictedAppRole', () => {
   it('refuses SECURITY DEFINER ownership', () => {
     expect(() => assertRestrictedAppRole(restricted({ owns_security_definer: true }))).toThrow(
       /SECURITY DEFINER/
+    );
+  });
+
+  it('refuses any role membership', () => {
+    expect(() => assertRestrictedAppRole(restricted({ has_role_membership: true }))).toThrow(
+      /must not have any role membership/
     );
   });
 

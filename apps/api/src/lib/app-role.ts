@@ -4,14 +4,24 @@ import { RuntimeConfigError } from './runtime-env.js';
 export const REQUIRED_APP_ROLE = 'meeting_assistant_app';
 
 /**
+ * Canonical USING / WITH CHECK expression stored by Postgres for
+ * `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`
+ * from the tenant_isolation migrations. Compared by exact equality.
+ */
+export const TENANT_ISOLATION_EXPR =
+  "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)";
+
+const TENANT_ISOLATION_SQL_LITERAL = TENANT_ISOLATION_EXPR.replaceAll("'", "''");
+
+/**
  * Fail closed unless APP_DATABASE_URL is the restricted app role itself
  * (session_user and current_user are meeting_assistant_app — not a member of
  * it, not a table owner, not SET ROLE onto a privileged role).
  *
  * That role must also be NOSUPERUSER NOBYPASSRLS, own no public relations or
- * SECURITY DEFINER functions, not be a member of a table owner, not receive
- * definer_access, and have only tenant-scoped policies
- * (tenant_id = current_setting('app.tenant_id')).
+ * SECURITY DEFINER functions, have no pg_auth_members rows, not be a member
+ * of a table owner, not receive definer_access, and have only policies whose
+ * USING and WITH CHECK equal the canonical tenant_isolation expression.
  */
 export const APP_ROLE_GUARD_SQL = `
 SELECT
@@ -35,6 +45,9 @@ SELECT
       AND p.prosecdef
       AND p.proowner = r.oid
   ) AS owns_security_definer,
+  EXISTS (
+    SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid
+  ) AS has_role_membership,
   EXISTS (
     SELECT 1
     FROM pg_auth_members m
@@ -72,19 +85,8 @@ SELECT
         )
       )
       AND NOT (
-        EXISTS (
-          SELECT 1
-          FROM pg_attribute a
-          WHERE a.attrelid = p.polrelid
-            AND a.attname = 'tenant_id'
-            AND NOT a.attisdropped
-        )
-        AND p.polqual IS NOT NULL
-        AND pg_get_expr(p.polqual, p.polrelid) LIKE '%tenant_id =%current_setting%app.tenant_id%'
-        AND (
-          p.polwithcheck IS NULL
-          OR pg_get_expr(p.polwithcheck, p.polrelid) LIKE '%tenant_id =%current_setting%app.tenant_id%'
-        )
+        pg_get_expr(p.polqual, p.polrelid) = '${TENANT_ISOLATION_SQL_LITERAL}'
+        AND pg_get_expr(p.polwithcheck, p.polrelid) = '${TENANT_ISOLATION_SQL_LITERAL}'
       )
   ) AS has_nontenant_policy
 FROM pg_roles r
@@ -102,6 +104,7 @@ export interface AppRoleGuardRow extends RoleAttrs {
   is_app_role: boolean;
   owns_public_relation: boolean;
   owns_security_definer: boolean;
+  has_role_membership: boolean;
   member_of_table_owner: boolean;
   has_definer_access: boolean;
   has_nontenant_policy: boolean;
@@ -141,6 +144,9 @@ export function assertRestrictedAppRole(
   }
   if (row.owns_security_definer) {
     throw new RuntimeConfigError(`${REQUIRED_APP_ROLE} must not own SECURITY DEFINER functions`);
+  }
+  if (row.has_role_membership) {
+    throw new RuntimeConfigError(`${REQUIRED_APP_ROLE} must not have any role membership`);
   }
   if (row.member_of_table_owner) {
     throw new RuntimeConfigError(`${REQUIRED_APP_ROLE} must not be a member of a table-owner role`);
