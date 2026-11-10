@@ -216,10 +216,18 @@ describe('RLS tenant isolation', () => {
     await expect(getAppPool().query('SELECT * FROM users')).rejects.toThrow();
     await expect(getAppPool().query('SELECT * FROM webhook_events')).rejects.toThrow();
     await expect(getAppPool().query('SELECT * FROM tenants')).rejects.toThrow();
+  });
 
-    const contact = await lookupUserContact(ACME_OWNER);
-    expect(contact).toEqual({ email: 'owner@example.com', name: 'Avery Owner' });
-    expect(contact).not.toHaveProperty('id');
+  it('lookup_user_contact is tenant-scoped', async () => {
+    const sameTenant = await lookupUserContact(ACME_OWNER, ACME);
+    expect(sameTenant).toEqual({ email: 'owner@example.com', name: 'Avery Owner' });
+    expect(sameTenant).not.toHaveProperty('id');
+
+    const crossTenant = await lookupUserContact(ACME_OWNER, LUMEN);
+    expect(crossTenant).toBeNull();
+
+    const noTenant = await lookupUserContact(ACME_OWNER);
+    expect(noTenant).toBeNull();
   });
 
   it('clears app.tenant_id on the pooled connection after commit', async () => {
@@ -289,7 +297,23 @@ describe('RLS tenant isolation', () => {
       recallBotId: ACME_BOT,
       claimedTenantId: LUMEN,
     });
-    expect(mismatch).toEqual({ ok: false, code: 'TENANT_MISMATCH' });
+    expect(mismatch).toEqual({ ok: false, code: 'NOT_FOUND' });
+    expect(mismatch).not.toHaveProperty('tenant_id');
+    expect(mismatch).not.toHaveProperty('meeting_id');
+
+    const unclaimed = await resolveMeetingTenant({
+      recallBotId: ACME_BOT,
+      claimedMeetingId: ACME_MEETING,
+    });
+    expect(unclaimed).toEqual({ ok: false, code: 'NOT_FOUND' });
+    expect(unclaimed).not.toHaveProperty('tenant_id');
+    expect(unclaimed).not.toHaveProperty('meeting_id');
+
+    const missing = await resolveMeetingTenant({
+      recallBotId: 'bot-does-not-exist',
+      claimedTenantId: ACME,
+    });
+    expect(missing).toEqual(mismatch);
   });
 
   it('rejects unsigned webhooks with 400 BAD_SIGNATURE and writes nothing', async () => {
@@ -424,6 +448,17 @@ describe('RLS tenant isolation', () => {
       .delete(`/api/v1/meetings/${memberMeeting}`)
       .set('Cookie', memberCookie);
     expect(memberOwn.status).toBe(204);
+
+    const ownerOwned = '10000000-0000-0000-0000-0000000000ee';
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'owner owned', 'zoom', 'https://zoom.us/j/3', 'completed')`,
+      [ownerOwned, ACME, ACME_OWNER]
+    );
+    const ownerOwn = await request(app)
+      .delete(`/api/v1/meetings/${ownerOwned}`)
+      .set('Cookie', ownerCookie);
+    expect(ownerOwn.status).toBe(204);
 
     const adminDel = await request(app)
       .delete(`/api/v1/meetings/${adminMeeting}`)

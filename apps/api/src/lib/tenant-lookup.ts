@@ -4,7 +4,8 @@
  * webhook_events / users directly as the app role.
  */
 
-import { db } from './db.js';
+import type pg from 'pg';
+import { db, withTenant } from './db.js';
 
 export interface ResolvedMeetingTenant {
   ok: true;
@@ -19,12 +20,16 @@ export interface FailedMeetingTenant {
 
 export type MeetingTenantResult = ResolvedMeetingTenant | FailedMeetingTenant;
 
+function notFoundMeetingTenant(): FailedMeetingTenant {
+  return { ok: false, code: 'NOT_FOUND' };
+}
+
 export async function resolveMeetingTenant(params: {
   recallBotId?: string | null;
   claimedTenantId?: string | null;
   claimedMeetingId?: string | null;
 }): Promise<MeetingTenantResult> {
-  const result = await db.query<{ resolve_meeting_tenant: MeetingTenantResult }>(
+  const result = await db.query<{ resolve_meeting_tenant: MeetingTenantResult | null }>(
     'SELECT resolve_meeting_tenant($1,$2,$3) AS resolve_meeting_tenant',
     [
       params.recallBotId ?? null,
@@ -32,7 +37,11 @@ export async function resolveMeetingTenant(params: {
       params.claimedMeetingId ?? null,
     ]
   );
-  return result.rows[0].resolve_meeting_tenant;
+  const row = result.rows[0]?.resolve_meeting_tenant;
+  if (!row || row.ok !== true) {
+    return notFoundMeetingTenant();
+  }
+  return { ok: true, tenant_id: row.tenant_id, meeting_id: row.meeting_id };
 }
 
 export async function webhookEventExists(
@@ -69,13 +78,32 @@ export async function webhookMarkProcessed(
   await db.query('SELECT webhook_mark_processed($1,$2,$3)', [recallBotId, eventType, eventId]);
 }
 
-export async function lookupUserContact(
+type SqlQuery = {
+  query: <T extends pg.QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ) => Promise<pg.QueryResult<T>>;
+};
+
+async function readUserContact(
+  queryable: SqlQuery,
   userId: string
 ): Promise<{ email: string; name: string | null } | null> {
-  const result = await db.query<{
+  const result = await queryable.query<{
     lookup_user_contact: { email: string; name: string | null } | null;
   }>('SELECT lookup_user_contact($1) AS lookup_user_contact', [userId]);
   return result.rows[0]?.lookup_user_contact ?? null;
+}
+
+/** Tenant-scoped via app.tenant_id. Omit tenantId to query with no session tenant. */
+export async function lookupUserContact(
+  userId: string,
+  tenantId?: string | null
+): Promise<{ email: string; name: string | null } | null> {
+  if (!tenantId) {
+    return readUserContact(db, userId);
+  }
+  return withTenant(tenantId, (client) => readUserContact(client, userId));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

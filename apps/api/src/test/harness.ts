@@ -182,7 +182,6 @@ export function applyAuthEnv(params: { ownerUrl: string; appUrl: string; issuerU
   process.env.NODE_ENV = 'test';
   process.env.DATABASE_URL = params.ownerUrl;
   process.env.APP_DATABASE_URL = params.appUrl;
-  delete process.env.DATABASE_APP_URL;
   process.env.PG_POOL_MAX = '1';
   process.env.COOKIE_SECURE = 'false';
   process.env.FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';

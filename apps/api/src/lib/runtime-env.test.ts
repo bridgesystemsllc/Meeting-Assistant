@@ -17,8 +17,17 @@ describe('runtime env', () => {
   it('rejects mock OIDC in production', () => {
     process.env.APP_DATABASE_URL = 'postgres://app@localhost/db';
     process.env.PUBLIC_BASE_URL = 'https://api.example.com';
+    process.env.OIDC_STATE_SECRET = 'prod-oidc-state-secret';
     process.env.NODE_ENV = 'production';
     process.env.OIDC_ALLOW_MOCK = 'true';
     expect(() => assertApiRuntimeEnv()).toThrow(/OIDC_ALLOW_MOCK/);
+  });
+
+  it('refuses to boot in production without OIDC_STATE_SECRET', () => {
+    process.env.APP_DATABASE_URL = 'postgres://app@localhost/db';
+    process.env.PUBLIC_BASE_URL = 'https://api.example.com';
+    process.env.NODE_ENV = 'production';
+    delete process.env.OIDC_STATE_SECRET;
+    expect(() => assertApiRuntimeEnv()).toThrow(/OIDC_STATE_SECRET/);
   });
 });
