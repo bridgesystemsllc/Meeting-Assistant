@@ -10,6 +10,7 @@ import {
 } from '../test/harness.js';
 import {
   APP_ROLE_GUARD_SQL,
+  TENANT_ISOLATION_EXPR,
   assertConnectedAppRole,
   assertRestrictedAppRole,
   type AppRoleGuardRow,
@@ -172,6 +173,7 @@ describe('app role boot allow-list', () => {
     expect(appGuard.rows[0].rolbypassrls).toBe(false);
     expect(appGuard.rows[0].owns_public_relation).toBe(false);
     expect(appGuard.rows[0].owns_security_definer).toBe(false);
+    expect(appGuard.rows[0].has_role_membership).toBe(false);
     expect(appGuard.rows[0].member_of_table_owner).toBe(false);
     expect(appGuard.rows[0].has_definer_access).toBe(false);
     expect(appGuard.rows[0].has_nontenant_policy).toBe(false);
@@ -284,4 +286,181 @@ describe('app role boot allow-list', () => {
     }
     await assertConnectedAppRole();
   });
+
+  it('refuses GRANT of a BYPASSRLS role to meeting_assistant_app in API and worker', async () => {
+    const admin = new pg.Client({ connectionString: adminManagedUrl });
+    await admin.connect();
+    try {
+      await admin.query(
+        `CREATE ROLE ma_bypass NOSUPERUSER NOCREATEDB NOCREATEROLE NOLOGIN BYPASSRLS`
+      );
+      await admin.query('GRANT ma_bypass TO meeting_assistant_app');
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].is_app_role).toBe(true);
+      expect(guard.rows[0].rolbypassrls).toBe(false);
+      expect(guard.rows[0].has_role_membership).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/role membership/);
+      await expect(assertConnectedAppRole()).rejects.toThrow(/role membership/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await admin.query('REVOKE ma_bypass FROM meeting_assistant_app').catch(() => undefined);
+      await admin.query('DROP ROLE IF EXISTS ma_bypass').catch(() => undefined);
+      await admin.end();
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses GRANT of a SUPERUSER role to meeting_assistant_app in API and worker', async () => {
+    const admin = new pg.Client({ connectionString: adminManagedUrl });
+    await admin.connect();
+    try {
+      await admin.query('CREATE ROLE ma_su SUPERUSER NOLOGIN');
+      await admin.query('GRANT ma_su TO meeting_assistant_app');
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].is_app_role).toBe(true);
+      expect(guard.rows[0].rolsuper).toBe(false);
+      expect(guard.rows[0].has_role_membership).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/role membership/);
+      await expect(assertConnectedAppRole()).rejects.toThrow(/role membership/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await admin.query('REVOKE ma_su FROM meeting_assistant_app').catch(() => undefined);
+      await admin.query('DROP ROLE IF EXISTS ma_su').catch(() => undefined);
+      await admin.end();
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses nested membership app → intermediate → table owner without definer_access', async () => {
+    const admin = new pg.Client({ connectionString: adminManagedUrl });
+    await admin.connect();
+    try {
+      await admin.query(`
+        CREATE ROLE ma_nested_owner NOSUPERUSER NOCREATEDB NOCREATEROLE NOLOGIN NOBYPASSRLS;
+        CREATE ROLE ma_intermediate NOSUPERUSER NOCREATEDB NOCREATEROLE NOLOGIN NOBYPASSRLS;
+        CREATE TABLE nested_probe (id int);
+        ALTER TABLE nested_probe OWNER TO ma_nested_owner;
+        GRANT ma_nested_owner TO ma_intermediate;
+        GRANT ma_intermediate TO meeting_assistant_app;
+      `);
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].is_app_role).toBe(true);
+      expect(guard.rows[0].has_definer_access).toBe(false);
+      expect(guard.rows[0].member_of_table_owner).toBe(false);
+      expect(guard.rows[0].has_role_membership).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/role membership/);
+      await expect(assertConnectedAppRole()).rejects.toThrow(/role membership/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await admin.query('REVOKE ma_intermediate FROM meeting_assistant_app').catch(() => undefined);
+      await admin.query('DROP TABLE IF EXISTS nested_probe').catch(() => undefined);
+      await admin.query('DROP ROLE IF EXISTS ma_intermediate').catch(() => undefined);
+      await admin.query('DROP ROLE IF EXISTS ma_nested_owner').catch(() => undefined);
+      await admin.end();
+    }
+    await assertConnectedAppRole();
+    const hidden = await getAppPool().query('SELECT id FROM meetings');
+    expect(hidden.rowCount).toBe(0);
+  }, 40_000);
+
+  it('accepts migration tenant_isolation USING and WITH CHECK by exact expression equality', async () => {
+    const policies = await getOwnerPool().query<{
+      polname: string;
+      using_expr: string;
+      check_expr: string;
+    }>(
+      `SELECT p.polname,
+              pg_get_expr(p.polqual, p.polrelid) AS using_expr,
+              pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
+         FROM pg_policy p
+         JOIN pg_class c ON c.oid = p.polrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND p.polname = 'tenant_isolation'`
+    );
+    expect(policies.rowCount).toBeGreaterThan(0);
+    for (const row of policies.rows) {
+      expect(row.using_expr).toBe(TENANT_ISOLATION_EXPR);
+      expect(row.check_expr).toBe(TENANT_ISOLATION_EXPR);
+    }
+    await assertConnectedAppRole();
+  });
+
+  it('refuses USING (true) on the app role in API and worker', async () => {
+    await getOwnerPool().query(
+      'CREATE POLICY sonar_true ON meetings TO meeting_assistant_app USING (true) WITH CHECK (true)'
+    );
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_nontenant_policy).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/tenant-scoped policies/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query('DROP POLICY IF EXISTS sonar_true ON meetings');
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses USING (<canonical> OR true) on the app role in API and worker', async () => {
+    await getOwnerPool().query(`
+      CREATE POLICY sonar_or_true ON meetings TO meeting_assistant_app
+        USING ((tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) OR true)
+        WITH CHECK ((tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid) OR true)
+    `);
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_nontenant_policy).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/tenant-scoped policies/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query('DROP POLICY IF EXISTS sonar_or_true ON meetings');
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses USING (<canonical> OR current_setting IS NULL) fallback in API and worker', async () => {
+    await getOwnerPool().query(`
+      CREATE POLICY sonar_or_null ON meetings TO meeting_assistant_app
+        USING (
+          (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          OR current_setting('app.tenant_id', true) IS NULL
+        )
+        WITH CHECK (
+          (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          OR current_setting('app.tenant_id', true) IS NULL
+        )
+    `);
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_nontenant_policy).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/tenant-scoped policies/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query('DROP POLICY IF EXISTS sonar_or_null ON meetings');
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it("refuses USING (<canonical> OR current_setting = '') fallback in API and worker", async () => {
+    await getOwnerPool().query(`
+      CREATE POLICY sonar_or_empty ON meetings TO meeting_assistant_app
+        USING (
+          (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          OR current_setting('app.tenant_id', true) = ''
+        )
+        WITH CHECK (
+          (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          OR current_setting('app.tenant_id', true) = ''
+        )
+    `);
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_nontenant_policy).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/tenant-scoped policies/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query('DROP POLICY IF EXISTS sonar_or_empty ON meetings');
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
 });
