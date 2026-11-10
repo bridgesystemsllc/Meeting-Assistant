@@ -5,14 +5,21 @@
  *
  * FORGE Phase 1 POST /api/v1/meetings (Recall bot create) must keep this
  * withTenant wrapping and must set tenant_id from the session, not the body.
+ *
+ * Seat check before bot dispatch (ATLAS Q11): `meetingsRouter.use(requireActiveSeat)`
+ * runs for every method, including a future POST. Call `assertActiveSeat(req.auth)`
+ * from `apps/api/src/lib/seats.ts` if Phase 1 (PR #3) registers POST elsewhere.
  */
 
 import { Router } from 'express';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { notFound, unauthenticated } from '../lib/http-error.js';
+import { requireActiveSeat } from '../lib/seats.js';
 
 export const meetingsRouter = Router();
+
+meetingsRouter.use(requireActiveSeat);
 
 function requireTenantId(req: { auth?: { tenant: { id: string } } }): string | null {
   return req.auth?.tenant.id ?? null;

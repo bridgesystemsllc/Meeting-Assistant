@@ -7,6 +7,10 @@ const ERROR_COPY: Record<string, string> = {
   no_access: 'No access: ask your admin.',
   invalid_state: 'Sign-in expired. Try again.',
   invalid_invite: 'That invite link is invalid or has already been used.',
+  invite_used: 'That invite link has already been used.',
+  invite_expired: 'That invite link has expired.',
+  invite_revoked: 'That invite was revoked.',
+  invite_tenant: 'That invite belongs to a different workspace.',
   invite_email: 'That invite was issued to a different email.',
   oidc: 'Sign-in failed. Try again.',
 };

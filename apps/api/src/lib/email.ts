@@ -1,17 +1,44 @@
 /**
  * Email adapter: log transport (default) and SMTP interface. No vendor provider.
- * Do not log message bodies — invite links carry single-use tokens.
+ * Dev/log logs the accept link and stores no secrets. SMTP is env-only.
  */
 
 import nodemailer from 'nodemailer';
 import type { EmailAdapter, EmailMessage, SmtpConfig } from '@meeting-assistant/shared';
 import { logger } from './logger.js';
 
+function acceptUrlFrom(message: EmailMessage): string | undefined {
+  if (message.acceptUrl) return message.acceptUrl;
+  const match = message.text.match(/https?:\/\/\S+/);
+  return match?.[0];
+}
+
 export function createLogEmailAdapter(): EmailAdapter {
   return {
     transport: 'log',
     async send(message: EmailMessage): Promise<void> {
-      logger.info({ to: message.to, subject: message.subject, transport: 'log' }, 'email dispatched');
+      logger.info(
+        {
+          to: message.to,
+          subject: message.subject,
+          acceptUrl: acceptUrlFrom(message),
+          transport: 'log',
+        },
+        'email dispatched'
+      );
+    },
+  };
+}
+
+export function createCapturingEmailAdapter(sent: EmailMessage[] = []): EmailAdapter & {
+  sent: EmailMessage[];
+} {
+  return {
+    transport: 'log',
+    sent,
+    async send(message: EmailMessage): Promise<void> {
+      sent.push({ ...message });
+      await createLogEmailAdapter().send(message);
     },
   };
 }
@@ -63,10 +90,6 @@ export function setEmailAdapter(adapter: EmailAdapter): void {
   currentAdapter = adapter;
 }
 
-/**
- * Invite email send is owned by P2-3 (seats). This hook is the accept path only.
- * Call sites in P2-3 should use getEmailAdapter().send(...) and never log the raw token.
- */
 export async function sendInviteEmail(params: {
   to: string;
   tenantName: string;
@@ -76,5 +99,6 @@ export async function sendInviteEmail(params: {
     to: params.to,
     subject: `You're invited to ${params.tenantName}`,
     text: `You were invited to ${params.tenantName}. Open this single-use link, then sign in: ${params.acceptUrl}`,
+    acceptUrl: params.acceptUrl,
   });
 }

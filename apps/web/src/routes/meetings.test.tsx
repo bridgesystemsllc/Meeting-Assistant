@@ -3,6 +3,23 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { MeetingsPage } from './meetings';
 
+vi.mock('../hooks/useAuth', () => ({
+  useAuth: () => ({
+    status: 'authenticated',
+    me: {
+      user: { id: '00000000-0000-0000-0000-000000000011', email: 'owner@example.com', name: 'Avery Owner' },
+      tenant: { id: '00000000-0000-0000-0000-000000000010', name: 'Acme Notes', slug: 'acme-notes' },
+      role: 'owner',
+      seat_status: 'active',
+      memberships: [],
+      seats: { seat_limit: 10, seats_used: 4 },
+    },
+    error: null,
+    refresh: vi.fn(),
+    signOut: vi.fn(),
+  }),
+}));
+
 function renderWithRouter(ui: React.ReactElement) {
   return render(<BrowserRouter>{ui}</BrowserRouter>);
 }
@@ -48,6 +65,7 @@ describe('MeetingsPage', () => {
     await waitFor(() => {
       expect(screen.getByText('No meetings found')).toBeTruthy();
     });
+    expect(screen.getByTestId('seats-footer').textContent).toBe('Seats: 4 of 10 used');
   });
 
   it('renders meetings on success', async () => {

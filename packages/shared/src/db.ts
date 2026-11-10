@@ -70,6 +70,7 @@ export const InviteSchema = z.object({
   token_hash: z.string(),
   expires_at: z.date(),
   accepted_at: z.date().nullable(),
+  revoked_at: z.date().nullable(),
   created_at: z.date(),
 });
 
