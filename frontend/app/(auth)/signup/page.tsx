@@ -40,7 +40,7 @@ export default function SignupPage() {
         </div>
         <div>
           <label htmlFor="company" className="block text-sm font-medium text-text-secondary mb-1.5">Company name <span className="text-text-muted">(optional)</span></label>
-          <input id="company" type="text" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme Corp" className="w-full bg-elevated border border-border-subtle rounded-md px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-violet" />
+          <input id="company" type="text" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Your company" className="w-full bg-elevated border border-border-subtle rounded-md px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-violet" />
         </div>
         <button type="submit" className="btn-violet w-full">Create Account</button>
       </form>

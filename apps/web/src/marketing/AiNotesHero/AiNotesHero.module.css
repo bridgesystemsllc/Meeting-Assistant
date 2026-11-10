@@ -221,6 +221,7 @@
   gap: 16px;
   margin-top: 56px;
   text-align: left;
+  width: 100%;
 }
 
 .panel {
@@ -509,7 +510,7 @@
   }
 
   .panels {
-    grid-template-columns: 1fr 1.15fr 0.95fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: stretch;
   }
 

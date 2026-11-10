@@ -50,7 +50,7 @@ export default function SettingsPage() {
         <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-4">Plan &amp; Billing</h2>
         <div className="card p-6">
           <div className="flex items-center justify-between mb-4">
-            <div><p className="text-sm font-medium text-text-primary">Enterprise Plan</p><p className="text-xs text-text-muted">$600/mo &middot; Up to 20 users</p></div>
+            <div><p className="text-sm font-medium text-text-primary">Enterprise Plan</p><p className="text-xs text-text-muted">Seat limit set by your admin</p></div>
             <span className="bg-violet/15 text-violet text-xs font-semibold px-3 py-1 rounded-full">Active</span>
           </div>
           <button className="btn-outline text-sm">Manage Billing</button>

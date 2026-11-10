@@ -145,6 +145,7 @@ export function AiNotesHero() {
         <div className={styles.panels}>
           <motion.article
             className={styles.panel}
+            data-testid="hero-panel-summary"
             initial={reduceMotion ? false : { opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: reduceMotion ? 0 : 0.4, delay: reduceMotion ? 0 : 0 }}
@@ -191,6 +192,7 @@ export function AiNotesHero() {
 
           <motion.article
             className={styles.panel}
+            data-testid="hero-panel-call"
             initial={reduceMotion ? false : { opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: reduceMotion ? 0 : 0.4, delay: reduceMotion ? 0 : 0.08 }}
@@ -209,6 +211,7 @@ export function AiNotesHero() {
 
           <motion.article
             className={styles.panel}
+            data-testid="hero-panel-participants"
             initial={reduceMotion ? false : { opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: reduceMotion ? 0 : 0.4, delay: reduceMotion ? 0 : 0.16 }}

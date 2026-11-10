@@ -24,6 +24,18 @@ function saveScreenshot(name: string, buffer: Buffer) {
   }
 }
 
+async function scrollHeroToTop(page: import('@playwright/test').Page) {
+  const hero = page.getByTestId('ai-notes-hero');
+  await hero.waitFor();
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="ai-notes-hero"]');
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + window.scrollY;
+    window.scrollTo({ top, left: 0, behavior: 'instant' });
+  });
+  await expect(page.getByTestId('hero-panel-participants')).toHaveCSS('opacity', '1');
+}
+
 test.describe('§5.3a landing hero', () => {
   test('computed styles, copy, fonts, network, sticky nav, CLS', async ({ page }) => {
     const thirdParty: string[] = [];
@@ -178,11 +190,12 @@ test.describe('§5.3a landing hero', () => {
     test(`screenshots at ${viewport.name}`, async ({ page }) => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       await page.goto('/');
-      const hero = page.getByTestId('ai-notes-hero');
-      await hero.scrollIntoViewIfNeeded();
-      saveScreenshot(`hero-default-${viewport.name}.png`, await hero.screenshot());
+      await scrollHeroToTop(page);
+      saveScreenshot(`hero-default-${viewport.name}.png`, await page.screenshot());
 
-      const heroTop = await hero.evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
+      const heroTop = await page
+        .getByTestId('ai-notes-hero')
+        .evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
       await page.evaluate((y) => window.scrollTo(0, y), heroTop + 1000);
       saveScreenshot(
         `hero-sticky-${viewport.name}.png`,
@@ -191,11 +204,8 @@ test.describe('§5.3a landing hero', () => {
 
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.goto('/');
-      await page.getByTestId('ai-notes-hero').scrollIntoViewIfNeeded();
-      saveScreenshot(
-        `hero-reduced-motion-${viewport.name}.png`,
-        await page.getByTestId('ai-notes-hero').screenshot(),
-      );
+      await scrollHeroToTop(page);
+      saveScreenshot(`hero-reduced-motion-${viewport.name}.png`, await page.screenshot());
     });
   }
 });
