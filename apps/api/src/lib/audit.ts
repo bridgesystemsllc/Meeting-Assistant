@@ -160,6 +160,16 @@ export async function purgeAuditTenant(tenantId: string): Promise<number> {
 
 /** Owner-only user erasure. Nulls actor_user_id and drops user-target rows. */
 export async function purgeAuditUser(userId: string): Promise<number> {
-  const result = await getOwnerPool().query<{ n: number | string }>('SELECT purge_audit_user($1) AS n', [userId]);
+  let emailHmac: string | null = null;
+  const user = await getOwnerPool().query<{ email: string }>('SELECT email FROM users WHERE id = $1', [
+    userId,
+  ]);
+  if (user.rows[0]?.email) {
+    emailHmac = hmacEmail(user.rows[0].email);
+  }
+  const result = await getOwnerPool().query<{ n: number | string }>('SELECT purge_audit_user($1, $2) AS n', [
+    userId,
+    emailHmac,
+  ]);
   return Number(result.rows[0]?.n ?? 0);
 }

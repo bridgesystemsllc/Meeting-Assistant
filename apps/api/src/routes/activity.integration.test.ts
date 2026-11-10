@@ -448,6 +448,52 @@ describe('activity integration', () => {
     const after = await owner.query(`SELECT 1 FROM audit_events WHERE target_id = $1`, [userId]);
     expect(after.rowCount).toBe(0);
 
+    const invitee = await owner.query<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('erase.hmac@example.com', 'Erase Hmac') RETURNING id`
+    );
+    const inviteeId = invitee.rows[0].id;
+    await owner.query(
+      `INSERT INTO memberships (tenant_id, user_id, role, seat_status)
+       VALUES ($1, $2, 'member', 'active')`,
+      [ACME, inviteeId]
+    );
+    let sentId: string;
+    let acceptedId: string;
+    await withTenant(ACME, async (client) => {
+      sentId = (
+        await recordAudit(client, {
+          actorUserId: ACME_OWNER,
+          action: 'invite.sent',
+          targetType: 'invite',
+          email: 'erase.hmac@example.com',
+        })
+      ).id;
+      acceptedId = (
+        await recordAudit(client, {
+          actorUserId: inviteeId,
+          action: 'invite.accepted',
+          targetType: 'invite',
+          email: 'erase.hmac@example.com',
+        })
+      ).id;
+    });
+    expect(await purgeAuditUser(inviteeId)).toBeGreaterThan(0);
+    const redacted = await owner.query<{
+      id: string;
+      actor_user_id: string | null;
+      email_hmac: string | null;
+      email_masked: string | null;
+    }>(`SELECT id, actor_user_id, email_hmac, email_masked FROM audit_events WHERE id = ANY($1::uuid[])`, [
+      [sentId!, acceptedId!],
+    ]);
+    expect(redacted.rowCount).toBe(2);
+    for (const row of redacted.rows) {
+      expect(row.email_hmac).toBeNull();
+      expect(row.email_masked).toBeNull();
+    }
+    expect(redacted.rows.find((row) => row.id === sentId!)?.actor_user_id).toBe(ACME_OWNER);
+    expect(redacted.rows.find((row) => row.id === acceptedId!)?.actor_user_id).toBeNull();
+
     await withTenant(ACME, async (client) => {
       await expect(client.query(`UPDATE audit_events SET action = 'logout'`)).rejects.toThrow(
         /append-only|permission denied/i
