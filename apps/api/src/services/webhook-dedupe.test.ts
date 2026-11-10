@@ -2,7 +2,7 @@
  * Webhook Deduplication Tests
  * Tests parallel replay protection and idempotency handling
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { verifyWebhookSignature, createSignature } from './webhook-verify.js';
 
 const TEST_SECRET = 'whsec_' + Buffer.from('test-secret-key-32-bytes').toString('base64');

@@ -10,7 +10,7 @@ import pg from 'pg';
 import { createSignature } from './webhook-verify.js';
 
 const TEST_SECRET = 'whsec_' + Buffer.from('test-secret-key-32-bytes').toString('base64');
-const SYNTHETIC_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+const _SYNTHETIC_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
 const hasPostgres = !!process.env.DATABASE_URL;
 

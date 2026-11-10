@@ -59,7 +59,7 @@ function formatDuration(seconds: number | null): string {
  * Sends recap email to meeting owner only
  */
 export async function sendRecapEmail(data: RecapEmailData): Promise<boolean> {
-  const { meeting, analysis, ownerEmail, ownerName, language } = data;
+  const { meeting, analysis, ownerEmail, ownerName: _ownerName, language } = data;
 
   if (!process.env.SMTP_HOST) {
     logger.info({ meetingId: meeting.id }, 'SMTP not configured, skipping recap email');

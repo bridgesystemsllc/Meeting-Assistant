@@ -103,7 +103,7 @@ Return ONLY a valid JSON object with this structure:
  * Parses Claude's response, handling JSON extraction and validation
  */
 function parseResponse(rawText: string): MeetingAnalysis {
-  let cleaned = rawText
+  const cleaned = rawText
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
