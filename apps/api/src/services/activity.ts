@@ -46,11 +46,10 @@ function decodeCursor(value: string): Cursor {
     if (!UUID_RE.test(parsed.id)) {
       invalidCursor();
     }
-    const created = Date.parse(parsed.createdAt);
-    if (Number.isNaN(created)) {
+    if (Number.isNaN(Date.parse(parsed.createdAt))) {
       invalidCursor();
     }
-    return { createdAt: new Date(created).toISOString(), id: parsed.id };
+    return { createdAt: parsed.createdAt, id: parsed.id };
   } catch (err) {
     if (err instanceof HttpError) throw err;
     invalidCursor();
@@ -107,8 +106,10 @@ export async function listActivity(auth: MeResponse, query: ActivityQuery): Prom
         metadata: Record<string, unknown> | null;
         email_masked: string | null;
         created_at: Date | string;
+        created_at_key: string;
       }>(
-        `SELECT id, actor_user_id, action, target_type, target_id, metadata, email_masked, created_at
+        `SELECT id, actor_user_id, action, target_type, target_id, metadata, email_masked, created_at,
+                to_json(created_at)#>>'{}' AS created_at_key
          FROM audit_events
          WHERE ($1::text IS NULL OR action = $1)
            AND (
@@ -150,10 +151,10 @@ export async function listActivity(auth: MeResponse, query: ActivityQuery): Prom
       };
     });
 
-    const last = items[items.length - 1];
+    const lastRow = rows[rows.length - 1];
     return ActivityListResponseSchema.parse({
       items,
-      nextCursor: hasMore && last ? encodeCursor(last.created_at, last.id) : null,
+      nextCursor: hasMore && lastRow ? encodeCursor(lastRow.created_at_key, lastRow.id) : null,
     });
   });
 }

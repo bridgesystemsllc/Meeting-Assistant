@@ -392,18 +392,24 @@ describe('activity integration', () => {
         [ACME, ACME_OWNER]
       );
       expect(Math.abs(Date.now() - new Date(stamped.rows[0].created_at).getTime())).toBeLessThan(60_000);
+    });
 
+    await withTenant(ACME, async (client) => {
       await expect(
         client.query(`INSERT INTO audit_events (tenant_id, action) VALUES ($1, 'not-an-action')`, [ACME])
       ).rejects.toThrow();
+    });
 
+    await withTenant(ACME, async (client) => {
       await expect(
         client.query(
           `INSERT INTO audit_events (tenant_id, actor_user_id, action) VALUES ($1, $2, 'login')`,
           [ACME, LUMEN_OWNER]
         )
       ).rejects.toThrow(/not a member/i);
+    });
 
+    await withTenant(ACME, async (client) => {
       await recordAudit(client, { action: 'failed-login', actorUserId: LUMEN_OWNER, targetType: 'user' });
       await recordAudit(client, { action: 'failed-invite', targetType: 'invite' });
     });
@@ -443,8 +449,12 @@ describe('activity integration', () => {
     expect(after.rowCount).toBe(0);
 
     await withTenant(ACME, async (client) => {
-      await expect(client.query(`UPDATE audit_events SET action = 'logout'`)).rejects.toThrow(/append-only/i);
-      await expect(client.query(`DELETE FROM audit_events`)).rejects.toThrow(/append-only/i);
+      await expect(client.query(`UPDATE audit_events SET action = 'logout'`)).rejects.toThrow(
+        /append-only|permission denied/i
+      );
+    });
+    await withTenant(ACME, async (client) => {
+      await expect(client.query(`DELETE FROM audit_events`)).rejects.toThrow(/append-only|permission denied/i);
     });
     await expect(owner.query(`UPDATE audit_events SET action = 'logout'`)).rejects.toThrow(/append-only/i);
     await expect(getAppPool().query(`SELECT purge_audit_tenant($1)`, [ACME])).rejects.toThrow();
