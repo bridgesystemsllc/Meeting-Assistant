@@ -6,7 +6,12 @@
 import type pg from 'pg';
 import { db } from './db.js';
 
-type AuthQueryClient = Pick<pg.PoolClient, 'query'>;
+type AuthQueryClient = {
+  query: <T extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    values?: unknown[]
+  ) => Promise<pg.QueryResult<T>>;
+};
 
 function exec(client?: AuthQueryClient): AuthQueryClient {
   return client ?? db;

@@ -81,7 +81,8 @@ function takeEmail(
 
 function normalizeInput(event: AuditEvent | AuditEventInput): AuditEventInput {
   const stub = event as AuditEvent;
-  if (typeof stub.target === 'string' && stub.target.length > 0 && event.targetType == null && event.targetId == null) {
+  const input = event as AuditEventInput;
+  if (typeof stub.target === 'string' && stub.target.length > 0 && input.targetType == null && input.targetId == null) {
     const uuid = UUID_RE.test(stub.target);
     return {
       actorUserId: stub.actorUserId,
