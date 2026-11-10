@@ -73,7 +73,7 @@ describe('non-superuser non-BYPASSRLS owner', () => {
     );
     expect(identities.rows[0].force_rls).toBe(true);
 
-    const contact = await lookupUserContact(ACME_OWNER);
+    const contact = await lookupUserContact(ACME_OWNER, ACME);
     expect(contact?.email).toBe('owner@example.com');
   });
 

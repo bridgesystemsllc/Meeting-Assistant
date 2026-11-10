@@ -4,7 +4,8 @@
  * webhook_events / users directly as the app role.
  */
 
-import { db } from './db.js';
+import type pg from 'pg';
+import { db, withTenant } from './db.js';
 
 export interface ResolvedMeetingTenant {
   ok: true;
@@ -69,13 +70,32 @@ export async function webhookMarkProcessed(
   await db.query('SELECT webhook_mark_processed($1,$2,$3)', [recallBotId, eventType, eventId]);
 }
 
-export async function lookupUserContact(
+type SqlQuery = {
+  query: <T extends pg.QueryResultRow>(
+    text: string,
+    params?: unknown[]
+  ) => Promise<pg.QueryResult<T>>;
+};
+
+async function readUserContact(
+  queryable: SqlQuery,
   userId: string
 ): Promise<{ email: string; name: string | null } | null> {
-  const result = await db.query<{
+  const result = await queryable.query<{
     lookup_user_contact: { email: string; name: string | null } | null;
   }>('SELECT lookup_user_contact($1) AS lookup_user_contact', [userId]);
   return result.rows[0]?.lookup_user_contact ?? null;
+}
+
+/** Tenant-scoped via app.tenant_id. Omit tenantId to query with no session tenant. */
+export async function lookupUserContact(
+  userId: string,
+  tenantId?: string | null
+): Promise<{ email: string; name: string | null } | null> {
+  if (!tenantId) {
+    return readUserContact(db, userId);
+  }
+  return withTenant(tenantId, (client) => readUserContact(client, userId));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

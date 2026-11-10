@@ -216,10 +216,18 @@ describe('RLS tenant isolation', () => {
     await expect(getAppPool().query('SELECT * FROM users')).rejects.toThrow();
     await expect(getAppPool().query('SELECT * FROM webhook_events')).rejects.toThrow();
     await expect(getAppPool().query('SELECT * FROM tenants')).rejects.toThrow();
+  });
 
-    const contact = await lookupUserContact(ACME_OWNER);
-    expect(contact).toEqual({ email: 'owner@example.com', name: 'Avery Owner' });
-    expect(contact).not.toHaveProperty('id');
+  it('lookup_user_contact is tenant-scoped', async () => {
+    const sameTenant = await lookupUserContact(ACME_OWNER, ACME);
+    expect(sameTenant).toEqual({ email: 'owner@example.com', name: 'Avery Owner' });
+    expect(sameTenant).not.toHaveProperty('id');
+
+    const crossTenant = await lookupUserContact(ACME_OWNER, LUMEN);
+    expect(crossTenant).toBeNull();
+
+    const noTenant = await lookupUserContact(ACME_OWNER);
+    expect(noTenant).toBeNull();
   });
 
   it('clears app.tenant_id on the pooled connection after commit', async () => {
