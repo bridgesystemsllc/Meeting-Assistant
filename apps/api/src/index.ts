@@ -6,6 +6,7 @@
 import 'dotenv/config';
 import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
+import { assertConnectedAppRole } from './lib/app-role.js';
 import { assertApiRuntimeEnv } from './lib/runtime-env.js';
 import { purgeExpiredAuthRows } from './lib/auth-db.js';
 import { requireWebhookSecret } from './services/webhook-verify.js';
@@ -15,6 +16,7 @@ if (process.env.NODE_ENV !== 'test') {
   if (process.env.NODE_ENV === 'production') {
     requireWebhookSecret();
   }
+  await assertConnectedAppRole();
 }
 
 const app = createApp();
