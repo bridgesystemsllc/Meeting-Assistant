@@ -14,7 +14,7 @@
 import { Router } from 'express';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
-import { notFound, unauthenticated } from '../lib/http-error.js';
+import { badRequest, notFound, parseUuidParam, unauthenticated } from '../lib/http-error.js';
 import { requireActiveSeat } from '../lib/seats.js';
 
 export const meetingsRouter = Router();
@@ -67,10 +67,14 @@ meetingsRouter.get('/', async (req, res) => {
  * Missing or cross-tenant → 404 NOT_FOUND.
  */
 meetingsRouter.get('/:id', async (req, res) => {
-  const { id } = req.params;
+  const id = parseUuidParam(req.params.id);
   const tenantId = requireTenantId(req);
   if (!tenantId) {
     unauthenticated(res);
+    return;
+  }
+  if (!id) {
+    badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 
@@ -137,10 +141,14 @@ meetingsRouter.get('/:id', async (req, res) => {
  * Cross-tenant → 404. Write isolation is enforced by RLS WITH CHECK / USING.
  */
 meetingsRouter.delete('/:id', async (req, res) => {
-  const { id } = req.params;
+  const id = parseUuidParam(req.params.id);
   const tenantId = requireTenantId(req);
   if (!tenantId) {
     unauthenticated(res);
+    return;
+  }
+  if (!id) {
+    badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 

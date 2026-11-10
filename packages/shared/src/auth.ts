@@ -40,6 +40,7 @@ export const AuthErrorCodeSchema = z.enum([
   'SEAT_LIMIT_REACHED',
   'LAST_OWNER',
   'ALREADY_MEMBER',
+  'MEMBER_DEACTIVATED',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCodeSchema>;
 

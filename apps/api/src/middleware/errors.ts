@@ -21,6 +21,12 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     return;
   }
 
+  const pgCode = typeof err === 'object' && err && 'code' in err ? String((err as { code?: unknown }).code) : '';
+  if (pgCode === '22P02') {
+    res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid id' } });
+    return;
+  }
+
   const statusCode = err.statusCode || err.status || 500;
   const message = process.env.NODE_ENV === 'production'
     ? 'Internal server error'

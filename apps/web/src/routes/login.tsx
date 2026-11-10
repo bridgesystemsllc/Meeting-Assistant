@@ -12,6 +12,8 @@ const ERROR_COPY: Record<string, string> = {
   invite_revoked: 'That invite was revoked.',
   invite_tenant: 'That invite belongs to a different workspace.',
   invite_email: 'That invite was issued to a different email.',
+  seat_limit: 'All seats are in use. Ask your admin.',
+  member_deactivated: 'This seat is deactivated. Ask your admin to reactivate it.',
   oidc: 'Sign-in failed. Try again.',
 };
 

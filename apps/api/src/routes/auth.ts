@@ -13,6 +13,7 @@ import {
   upsertUser,
 } from '../lib/auth-db.js';
 import { buildAuthorizationRequest, exchangeAuthorizationCode, getProviderConfig } from '../lib/oidc.js';
+import { recordAudit } from '../lib/audit.js';
 import { issueSession, readSessionToken, revokeSession } from '../lib/session.js';
 
 export const authRouter = Router();
@@ -39,6 +40,8 @@ const INVITE_ERROR_QUERY: Record<string, string> = {
   INVITE_REVOKED: 'invite_revoked',
   INVITE_WRONG_TENANT: 'invite_tenant',
   INVITE_EMAIL_MISMATCH: 'invite_email',
+  SEAT_LIMIT_REACHED: 'seat_limit',
+  MEMBER_DEACTIVATED: 'member_deactivated',
 };
 
 authRouter.get('/invites/:token', async (req, res, next) => {
@@ -158,11 +161,12 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
     const user = await upsertUser(claims.email, claims.name);
     let memberships = await membershipsForEmail(user.email);
 
+    let acceptedInvite: Awaited<ReturnType<typeof acceptInvite>> | null = null;
     if (stored.invite_token_hash) {
-      const accepted = await acceptInvite(stored.invite_token_hash, user.id, user.email);
-      if (!accepted.ok) {
-        logger.info({ code: accepted.code }, 'invite acceptance failed');
-        redirectToLogin(res, INVITE_ERROR_QUERY[accepted.code ?? 'INVALID_INVITE'] ?? 'invalid_invite');
+      acceptedInvite = await acceptInvite(stored.invite_token_hash, user.id, user.email);
+      if (!acceptedInvite.ok) {
+        logger.info({ code: acceptedInvite.code }, 'invite acceptance failed');
+        redirectToLogin(res, INVITE_ERROR_QUERY[acceptedInvite.code ?? 'INVALID_INVITE'] ?? 'invalid_invite');
         return;
       }
       memberships = await membershipsForEmail(user.email);
@@ -182,6 +186,17 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       activeTenantId: selected.tenant.id,
       previousToken: previous,
     });
+
+    if (acceptedInvite?.tenant_id) {
+      await recordAudit({
+        tenantId: acceptedInvite.tenant_id,
+        actorUserId: user.id,
+        action: 'invite.accepted',
+        target: acceptedInvite.membership_id ?? acceptedInvite.tenant_id,
+        meta: { email: user.email },
+      });
+    }
+
     res.setHeader('Set-Cookie', session.setCookie);
     res.redirect(`${frontendUrl()}/meetings`);
   } catch (err) {
