@@ -6,10 +6,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { startPostgres } from '../test/harness.js';
-import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 
 describe('migrations', () => {
-  let container: StartedPostgreSqlContainer;
+  let container: { stop: () => Promise<unknown> };
   let ownerUrl: string;
 
   beforeAll(async () => {

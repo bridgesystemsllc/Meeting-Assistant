@@ -109,6 +109,12 @@ export async function processMeeting(
         throw new Error(`Meeting ${meetingId} not found`);
       }
 
+      // Verify job tenantId matches meeting's tenant_id (FK integrity)
+      const meeting = result.rows[0];
+      if (meeting.tenant_id !== tenantId) {
+        throw new Error(`Tenant mismatch: job has ${tenantId}, meeting has ${meeting.tenant_id}`);
+      }
+
       // Update status to processing
       await client.query(
         'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',

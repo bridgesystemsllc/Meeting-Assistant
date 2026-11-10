@@ -84,8 +84,8 @@ export async function queueMeetingProcessing(
     throw new Error('TENANT_REQUIRED');
   }
 
-  // Use botId + event type as jobId for deduplication
-  const jobId = `${recallBotId}-processing`;
+  // Use meeting:${meetingId} as jobId for deduplication
+  const jobId = `meeting:${meetingId}`;
 
   const job = await meetingQueue.add(
     'process',

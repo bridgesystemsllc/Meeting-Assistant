@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { OAuth2Server } from 'oauth2-mock-server';
 
 const APP_PASSWORD = 'app-test-secret';
@@ -11,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, '../../../../db/migrations');
 
 export interface TestStack {
-  container: StartedPostgreSqlContainer;
+  container: { stop: () => Promise<unknown> };
   ownerUrl: string;
   appUrl: string;
   mockOidc: OAuth2Server;
@@ -40,7 +40,28 @@ function appConnectionUrl(ownerUrl: string): string {
   return url.toString();
 }
 
-export async function startPostgres(): Promise<{ container: StartedPostgreSqlContainer; ownerUrl: string; appUrl: string }> {
+export interface PostgresStack {
+  container: { stop: () => Promise<unknown> };
+  ownerUrl: string;
+  appUrl: string;
+}
+
+/**
+ * Start Postgres - uses CI DATABASE_URL if available, otherwise Testcontainers
+ */
+export async function startPostgres(): Promise<PostgresStack> {
+  // If DATABASE_URL is set (CI environment), use it directly
+  const ciDatabaseUrl = process.env.DATABASE_URL;
+  if (ciDatabaseUrl) {
+    // In CI, migrations are already applied by the workflow
+    return {
+      container: { stop: async () => { /* no-op in CI */ } },
+      ownerUrl: ciDatabaseUrl,
+      appUrl: ciDatabaseUrl, // In CI, we use the same URL
+    };
+  }
+
+  // Local development: use Testcontainers
   const container = await new PostgreSqlContainer('postgres:16-alpine').start();
   const ownerUrl = container.getConnectionUri();
   await applyMigrations(ownerUrl);

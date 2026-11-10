@@ -65,13 +65,19 @@ jobs:
       - run: npm ci
       - name: Run migrations
         run: |
-          psql -h localhost -U test -d test -f db/migrations/001_initial.sql
+          for f in db/migrations/*.sql; do
+            echo "Applying $f"
+            psql -h localhost -U test -d test -f "$f"
+          done
         env:
           PGPASSWORD: test
       - run: npm run test -- --run
         env:
+          NODE_ENV: test
           DATABASE_URL: postgres://test:test@localhost:5432/test
+          DATABASE_APP_URL: postgres://test:test@localhost:5432/test
           REDIS_URL: redis://localhost:6379
+          RECALL_WEBHOOK_SECRET: whsec_test_secret_for_ci
 
   e2e:
     runs-on: ubuntu-latest

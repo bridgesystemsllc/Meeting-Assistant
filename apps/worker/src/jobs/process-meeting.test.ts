@@ -292,6 +292,60 @@ describe('processMeeting', () => {
     await expect(processMeeting(job)).rejects.toThrow();
   });
 
+  it('tenant_id_fk_consistency: rejects if job tenantId mismatches meeting tenant_id', async () => {
+    // Meeting has different tenant_id than the job
+    const meetingWithDifferentTenant = {
+      ...MOCK_MEETING,
+      tenant_id: '00000000-0000-0000-0000-000000000099', // Different from job's TENANT_A
+    };
+
+    query.mockResolvedValueOnce({ rows: [meetingWithDifferentTenant], rowCount: 1 });
+
+    const job = mockJob(); // Uses TENANT_A
+
+    await expect(processMeeting(job)).rejects.toThrow('Tenant mismatch');
+  });
+
+  it('tenant_id_fk_consistency: all inserts use meeting tenant_id', async () => {
+    // This test verifies that transcripts, meeting_analysis, and email_deliveries
+    // all receive the same tenant_id as the meeting
+    process.env.SMTP_HOST = 'smtp.test.com';
+    process.env.SMTP_USER = 'test';
+
+    const capturedParams: unknown[][] = [];
+    query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (params) capturedParams.push(params);
+      
+      // Return appropriate mocks based on the query
+      if (sql.includes('SELECT') && sql.includes('FROM meetings')) {
+        return { rows: [MOCK_MEETING], rowCount: 1 };
+      }
+      if (sql.includes('SELECT media_deleted_at')) {
+        return { rows: [{ media_deleted_at: new Date() }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    vi.mocked(recallService.getTranscript).mockResolvedValue(MOCK_TRANSCRIPT);
+    vi.mocked(recallService.deleteMedia).mockResolvedValue(true);
+    vi.mocked(recallService.formatTranscript).mockReturnValue(MOCK_FORMATTED_TRANSCRIPT);
+    vi.mocked(analyzeMeeting).mockResolvedValue({
+      analysis: MOCK_ANALYSIS,
+      rawResponse: '{}',
+      model: 'claude-sonnet-4-20250514',
+    });
+    vi.mocked(sendRecapEmail).mockResolvedValue(true);
+
+    await processMeeting(mockJob());
+
+    // All INSERT statements should have TENANT_A as the first parameter (tenant_id)
+    const insertParams = capturedParams.filter(p => p.length > 2); // INSERTs have more params
+    for (const params of insertParams) {
+      // tenant_id should be the first param and match the meeting's tenant
+      expect(params[0]).toBe(TENANT_A);
+    }
+  });
+
   it('uses runTenantJob for all DB operations', async () => {
     process.env.SMTP_HOST = 'smtp.test.com';
     process.env.SMTP_USER = 'test';
