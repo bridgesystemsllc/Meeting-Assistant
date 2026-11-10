@@ -11,7 +11,7 @@
     "dev:api": "npm run dev -w apps/api",
     "dev:worker": "npm run dev -w apps/worker",
     "dev:web": "npm run dev -w apps/web",
-    "build": "npm run build -ws --if-present",
+    "build": "npm run build -w @meeting-assistant/shared && npm run build -w apps/api -w apps/web -w apps/worker --if-present",
     "lint": "npm run lint -ws --if-present",
     "typecheck": "npm run typecheck -ws --if-present",
     "test": "npm run test -ws --if-present",
