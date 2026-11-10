@@ -12,3 +12,4 @@ export * from './brand-voice.js';
 export * from './auth.js';
 export * from './email.js';
 export * from './tenant.js';
+export * from './audit.js';

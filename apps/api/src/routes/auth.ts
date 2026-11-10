@@ -13,7 +13,9 @@ import {
   upsertUser,
 } from '../lib/auth-db.js';
 import { buildAuthorizationRequest, exchangeAuthorizationCode, getProviderConfig } from '../lib/oidc.js';
-import { issueSession, readSessionToken, revokeSession } from '../lib/session.js';
+import { recordAudit } from '../lib/audit.js';
+import { withTenant } from '../lib/db.js';
+import { issueSession, loadSession, readSessionToken, revokeSession } from '../lib/session.js';
 
 export const authRouter = Router();
 
@@ -157,6 +159,7 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 
     const user = await upsertUser(claims.email, claims.name);
     let memberships = await membershipsForEmail(user.email);
+    let acceptedInvite: { membership_id?: string; tenant_id?: string } | null = null;
 
     if (stored.invite_token_hash) {
       const accepted = await acceptInvite(stored.invite_token_hash, user.id, user.email);
@@ -165,6 +168,7 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
         redirectToLogin(res, INVITE_ERROR_QUERY[accepted.code ?? 'INVALID_INVITE'] ?? 'invalid_invite');
         return;
       }
+      acceptedInvite = accepted;
       memberships = await membershipsForEmail(user.email);
     }
 
@@ -182,6 +186,27 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       activeTenantId: selected.tenant.id,
       previousToken: previous,
     });
+
+    if (acceptedInvite?.tenant_id) {
+      await withTenant(acceptedInvite.tenant_id, (tx) =>
+        recordAudit(tx, {
+          actorUserId: user.id,
+          action: 'invite.accepted',
+          targetType: 'membership',
+          targetId: acceptedInvite?.membership_id ?? null,
+          metadata: { email: user.email },
+        })
+      );
+    }
+    await withTenant(selected.tenant.id, (tx) =>
+      recordAudit(tx, {
+        actorUserId: user.id,
+        action: 'login',
+        targetType: 'user',
+        targetId: user.id,
+      })
+    );
+
     res.setHeader('Set-Cookie', session.setCookie);
     res.redirect(`${frontendUrl()}/meetings`);
   } catch (err) {
@@ -190,7 +215,19 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 });
 
 async function handleLogout(req: Request, res: Response, wantsJson: boolean): Promise<void> {
-  const cleared = await revokeSession(readSessionToken(req.cookies));
+  const token = readSessionToken(req.cookies);
+  const ctx = token ? await loadSession(token) : null;
+  if (ctx?.user && ctx.active_tenant_id) {
+    await withTenant(ctx.active_tenant_id, (tx) =>
+      recordAudit(tx, {
+        actorUserId: ctx.user.id,
+        action: 'logout',
+        targetType: 'user',
+        targetId: ctx.user.id,
+      })
+    );
+  }
+  const cleared = await revokeSession(token);
   res.setHeader('Set-Cookie', cleared);
   if (wantsJson) {
     res.json({ ok: true });

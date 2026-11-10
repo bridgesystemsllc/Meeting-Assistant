@@ -6,6 +6,7 @@ import { MeetingDetailPage } from './routes/meeting-detail';
 import { LoginPage } from './routes/login';
 import { InvitePage } from './routes/invite';
 import { SeatsPage } from './routes/settings/seats';
+import { ActivityPage } from './routes/settings/activity';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="meetings" element={<MeetingsPage />} />
           <Route path="meetings/:id" element={<MeetingDetailPage />} />
           <Route path="settings/seats" element={<SeatsPage />} />
+          <Route path="settings/activity" element={<ActivityPage />} />
         </Route>
       </Route>
     </Routes>

@@ -13,6 +13,7 @@ import {
   type SeatMember,
   type SeatsResponse,
 } from '@meeting-assistant/shared';
+import { recordAudit } from '../lib/audit.js';
 import { hashToken, randomToken } from '../lib/crypto.js';
 import { withTenant } from '../lib/db.js';
 import { sendInviteEmail } from '../lib/email.js';
@@ -202,12 +203,19 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
       throw new HttpError(409, 'ALREADY_MEMBER', 'An invite is already pending for this email');
     }
 
-    await insertInvite(client, {
+    const invite = await insertInvite(client, {
       tenantId: auth.tenant.id,
       email: body.email,
       role: body.role,
       tokenHash,
       expiresAt,
+    });
+    await recordAudit(client, {
+      actorUserId: auth.user.id,
+      action: 'invite.sent',
+      targetType: 'invite',
+      targetId: invite.id,
+      metadata: { email: body.email, role: body.role },
     });
     return loadDirectory(client, auth.tenant.id, true);
   });
@@ -259,6 +267,13 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
         WHERE id = $1`,
       [inviteId, tokenHash, expiresAt.toISOString()]
     );
+    await recordAudit(client, {
+      actorUserId: auth.user.id,
+      action: 'invite.resent',
+      targetType: 'invite',
+      targetId: invite.id,
+      metadata: { email: invite.email, role: invite.role },
+    });
     return loadDirectory(client, auth.tenant.id, true);
   });
 
@@ -275,9 +290,11 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
   return withTenant(auth.tenant.id, async (client) => {
     const found = await client.query<{
       id: string;
+      email: string;
+      role: InviteRequest['role'];
       accepted_at: Date | null;
       revoked_at: Date | null;
-    }>(`SELECT id, accepted_at, revoked_at FROM invites WHERE id = $1`, [inviteId]);
+    }>(`SELECT id, email, role, accepted_at, revoked_at FROM invites WHERE id = $1`, [inviteId]);
     const invite = found.rows[0];
     if (!invite) {
       throw new HttpError(404, 'NOT_FOUND', 'Invite not found');
@@ -287,6 +304,13 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
     }
     if (!invite.revoked_at) {
       await client.query(`UPDATE invites SET revoked_at = clock_timestamp() WHERE id = $1`, [inviteId]);
+      await recordAudit(client, {
+        actorUserId: auth.user.id,
+        action: 'invite.revoked',
+        targetType: 'invite',
+        targetId: invite.id,
+        metadata: { email: invite.email, role: invite.role },
+      });
     }
     return loadDirectory(client, auth.tenant.id, true);
   });
@@ -320,6 +344,13 @@ export async function deactivateMember(auth: MeResponse, membershipId: string): 
     if (membership.seat_status !== 'deactivated') {
       await client.query(`UPDATE memberships SET seat_status = 'deactivated' WHERE id = $1`, [membershipId]);
       await revokeSessions(client, membership.user_id, auth.tenant.id);
+      await recordAudit(client, {
+        actorUserId: auth.user.id,
+        action: 'member.deactivated',
+        targetType: 'membership',
+        targetId: membership.id,
+        metadata: { user_id: membership.user_id, role: membership.role },
+      });
     }
     return loadDirectory(client, auth.tenant.id, true);
   });
@@ -330,9 +361,10 @@ export async function reactivateMember(auth: MeResponse, membershipId: string): 
     const usage = await snapshot(client, auth.tenant.id, true);
     const found = await client.query<{
       id: string;
+      user_id: string;
       role: SeatMember['role'];
       seat_status: SeatMember['seat_status'];
-    }>(`SELECT id, role, seat_status FROM memberships WHERE id = $1`, [membershipId]);
+    }>(`SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1`, [membershipId]);
     const membership = found.rows[0];
     if (!membership) {
       throw new HttpError(404, 'NOT_FOUND', 'Member not found');
@@ -349,6 +381,13 @@ export async function reactivateMember(auth: MeResponse, membershipId: string): 
         );
       }
       await client.query(`UPDATE memberships SET seat_status = 'active' WHERE id = $1`, [membershipId]);
+      await recordAudit(client, {
+        actorUserId: auth.user.id,
+        action: 'member.reactivated',
+        targetType: 'membership',
+        targetId: membership.id,
+        metadata: { user_id: membership.user_id, role: membership.role },
+      });
     }
     return loadDirectory(client, auth.tenant.id, true);
   });

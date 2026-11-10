@@ -23,7 +23,7 @@ export function isGlobalTable(name: string): boolean {
 }
 
 /**
- * Tenant-owned tables known at P2-2. The CI meta-test is dynamic (every
+ * Tenant-owned tables known at P2-4. The CI meta-test is dynamic (every
  * public table not in GLOBAL_TABLES), so a new table still fails CI even if
  * it is missing from this list.
  */
@@ -35,6 +35,7 @@ export const TENANT_TABLES = [
   'tenant_settings',
   'memberships',
   'invites',
+  'audit_events',
 ] as const;
 
 export type TenantTable = (typeof TENANT_TABLES)[number];
