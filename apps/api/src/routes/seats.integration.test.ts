@@ -1,3 +1,5 @@
+import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { EmailMessage } from '@meeting-assistant/shared';
@@ -12,7 +14,7 @@ import {
 import { getAppPool, resetPools, withTenant } from '../lib/db.js';
 import { hashToken, randomToken } from '../lib/crypto.js';
 import { clearOidcCache } from '../lib/oidc.js';
-import { createCapturingEmailAdapter, setEmailAdapter } from '../lib/email.js';
+import { createCapturingEmailAdapter, createSmtpEmailAdapter, setEmailAdapter } from '../lib/email.js';
 
 const ACME = '00000000-0000-0000-0000-000000000010';
 const LUMEN = '00000000-0000-0000-0000-000000000001';
@@ -376,31 +378,61 @@ describe('seats integration', () => {
     }
   });
 
+  it('refuses a new invite to a deactivated member so it does not hold a seat', async () => {
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const before = await admin.get('/api/v1/tenant/seats');
+    const used = before.body.seats_used as number;
+    await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`);
+    try {
+      const created = await admin.post('/api/v1/tenant/seats/invite').send({
+        email: 'member@example.com',
+        role: 'admin',
+      });
+      expect(created.status).toBe(409);
+      expect(created.body.error.code).toBe('MEMBER_DEACTIVATED');
+      const after = await admin.get('/api/v1/tenant/seats');
+      expect(after.body.invites.some((i: { email: string }) => i.email === 'member@example.com')).toBe(false);
+      expect(after.body.seats_used).toBeLessThan(used);
+    } finally {
+      await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/reactivate`);
+    }
+  });
+
   it('rejects a deactivated member who tries to redeem an invite', async () => {
     const admin = await login('owner@example.com', 'Avery Owner');
     await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`);
-    const created = await admin.post('/api/v1/tenant/seats/invite').send({
-      email: 'member@example.com',
-      role: 'admin',
-    });
-    expect(created.status).toBe(201);
-    const token = tokenFrom(inbox.at(-1));
+    const token = randomToken(32);
+    const ownerDb = new pg.Client({ connectionString: stack.ownerUrl });
+    await ownerDb.connect();
+    try {
+      await ownerDb.query(
+        `INSERT INTO invites (tenant_id, email, role, token_hash, expires_at)
+         VALUES ($1, 'member@example.com', 'admin', $2, NOW() + INTERVAL '1 day')`,
+        [ACME, hashToken(token)]
+      );
+    } finally {
+      await ownerDb.end();
+    }
     const attempt = await loginWithInvite('member@example.com', 'Morgan Member', token);
     expect(attempt.status).toBe(302);
     expect(attempt.headers.location).toMatch(/error=member_deactivated/);
 
-    const ownerDb = new pg.Client({ connectionString: stack.ownerUrl });
-    await ownerDb.connect();
+    const check = new pg.Client({ connectionString: stack.ownerUrl });
+    await check.connect();
     try {
-      const mem = await ownerDb.query<{ role: string; seat_status: string }>(
+      const mem = await check.query<{ role: string; seat_status: string }>(
         `SELECT role, seat_status FROM memberships WHERE id = $1`,
         [MEMBERSHIP_MEMBER]
       );
       expect(mem.rows[0]?.seat_status).toBe('deactivated');
       expect(mem.rows[0]?.role).toBe('member');
+      await check.query(
+        `DELETE FROM invites WHERE tenant_id = $1 AND email = 'member@example.com' AND accepted_at IS NULL`,
+        [ACME]
+      );
+      await check.query(`UPDATE memberships SET seat_status = 'active' WHERE id = $1`, [MEMBERSHIP_MEMBER]);
     } finally {
-      await ownerDb.query(`UPDATE memberships SET seat_status = 'active' WHERE id = $1`, [MEMBERSHIP_MEMBER]);
-      await ownerDb.end();
+      await check.end();
     }
   });
 
@@ -597,29 +629,38 @@ describe('seats integration', () => {
 
   it('refuses resend and accept of a stale member invite for the sole owner', async () => {
     const admin = await login('owner@example.com', 'Avery Owner');
-    const staleToken = randomToken(32);
+    const acceptToken = randomToken(32);
+    const resendToken = randomToken(32);
     const ownerDb = new pg.Client({ connectionString: stack.ownerUrl });
     await ownerDb.connect();
-    let inviteId = '';
+    let acceptInviteId = '';
+    let resendInviteId = '';
     try {
-      const inserted = await ownerDb.query<{ id: string }>(
+      const acceptInserted = await ownerDb.query<{ id: string }>(
         `INSERT INTO invites (tenant_id, email, role, token_hash, expires_at)
          VALUES ($1, 'owner@example.com', 'member', $2, NOW() + INTERVAL '1 day')
          RETURNING id`,
-        [ACME, hashToken(staleToken)]
+        [ACME, hashToken(acceptToken)]
       );
-      inviteId = inserted.rows[0].id;
+      acceptInviteId = acceptInserted.rows[0].id;
+      const resendInserted = await ownerDb.query<{ id: string }>(
+        `INSERT INTO invites (tenant_id, email, role, token_hash, expires_at)
+         VALUES ($1, 'owner@example.com', 'member', $2, NOW() + INTERVAL '1 day')
+         RETURNING id`,
+        [ACME, hashToken(resendToken)]
+      );
+      resendInviteId = resendInserted.rows[0].id;
     } finally {
       await ownerDb.end();
     }
 
-    const resend = await admin.post(`/api/v1/tenant/seats/invites/${inviteId}/resend`);
-    expect(resend.status).toBe(409);
-    expect(resend.body.error.code).toBe('ALREADY_MEMBER');
-
-    const accepted = await loginWithInvite('owner@example.com', 'Avery Owner', staleToken);
+    const accepted = await loginWithInvite('owner@example.com', 'Avery Owner', acceptToken);
     expect(accepted.status).toBe(302);
     expect(accepted.headers.location).toMatch(/error=(already_member|last_owner)/);
+
+    const resend = await admin.post(`/api/v1/tenant/seats/invites/${resendInviteId}/resend`);
+    expect(resend.status).toBe(409);
+    expect(resend.body.error.code).toBe('ALREADY_MEMBER');
 
     const check = new pg.Client({ connectionString: stack.ownerUrl });
     await check.connect();
@@ -636,11 +677,77 @@ describe('seats integration', () => {
         [ACME]
       );
       expect(Number(owners.rows[0]?.n)).toBe(1);
-      await check.query(`DELETE FROM invites WHERE id = $1`, [inviteId]);
+      const revoked = await check.query<{ id: string; revoked_at: Date | null }>(
+        `SELECT id, revoked_at FROM invites WHERE id = ANY($1::uuid[])`,
+        [[acceptInviteId, resendInviteId]]
+      );
+      expect(revoked.rowCount).toBe(2);
+      expect(revoked.rows.every((row) => row.revoked_at !== null)).toBe(true);
     } finally {
       await check.end();
     }
   });
+
+  it('fails fast against a silent SMTP server, rolls back the invite, and does not block deactivate', async () => {
+    const sockets: net.Socket[] = [];
+    const silent = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.on('error', () => undefined);
+    });
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+    const port = (silent.address() as AddressInfo).port;
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const before = await admin.get('/api/v1/tenant/seats');
+    const used = before.body.seats_used as number;
+    setEmailAdapter(
+      createSmtpEmailAdapter({
+        host: '127.0.0.1',
+        port,
+        from: 'noreply@example.com',
+        secure: false,
+      })
+    );
+    const started = Date.now();
+    try {
+      const inviteReq = admin.post('/api/v1/tenant/seats/invite').send({
+        email: 'silent.smtp@example.com',
+        role: 'member',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const deactivateReq = admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`);
+      const [created, deactivated] = await Promise.all([inviteReq, deactivateReq]);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(created.status).toBe(500);
+      expect(created.body.error.code).toBe('INTERNAL');
+      expect(created.body.error.message).toBe('Internal server error');
+      expect(JSON.stringify(created.body)).not.toMatch(/ETIMEDOUT|ECONNECTION|ESOCKET|Greeting|smtp/i);
+      expect(deactivated.status).toBe(200);
+      expect(
+        deactivated.body.members.find((m: { id: string }) => m.id === MEMBERSHIP_MEMBER)?.seat_status
+      ).toBe('deactivated');
+      const after = await admin.get('/api/v1/tenant/seats');
+      expect(after.body.invites.some((i: { email: string }) => i.email === 'silent.smtp@example.com')).toBe(
+        false
+      );
+      expect(after.body.seats_used).toBe(used - 1);
+      const leftover = new pg.Client({ connectionString: stack.ownerUrl });
+      await leftover.connect();
+      try {
+        const rows = await leftover.query(
+          `SELECT id FROM invites WHERE tenant_id = $1 AND email = 'silent.smtp@example.com'`,
+          [ACME]
+        );
+        expect(rows.rowCount).toBe(0);
+      } finally {
+        await leftover.end();
+      }
+    } finally {
+      setEmailAdapter(createCapturingEmailAdapter(inbox));
+      await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/reactivate`);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => silent.close((err) => (err ? reject(err) : resolve())));
+    }
+  }, 20_000);
 
   it('rolls back a new invite when email send fails so the seat is not held', async () => {
     const admin = await login('owner@example.com', 'Avery Owner');
@@ -658,6 +765,9 @@ describe('seats integration', () => {
         role: 'member',
       });
       expect(created.status).toBe(500);
+      expect(created.body.error.code).toBe('INTERNAL');
+      expect(created.body.error.message).toBe('Internal server error');
+      expect(JSON.stringify(created.body)).not.toContain('smtp down');
       const after = await admin.get('/api/v1/tenant/seats');
       expect(after.body.seats_used).toBe(used);
       expect(after.body.invites.some((i: { email: string }) => i.email === 'send.fail@example.com')).toBe(

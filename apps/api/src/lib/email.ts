@@ -8,6 +8,11 @@ import nodemailer from 'nodemailer';
 import type { EmailAdapter, EmailMessage, SmtpConfig } from '@meeting-assistant/shared';
 import { logger } from './logger.js';
 
+/** Fail fast so invite SMTP I/O cannot hold the tenant lock for tens of seconds. */
+export const SMTP_CONNECTION_TIMEOUT_MS = 5_000;
+export const SMTP_GREETING_TIMEOUT_MS = 5_000;
+export const SMTP_SOCKET_TIMEOUT_MS = 10_000;
+
 export function allowLogEmailTransport(env = process.env.NODE_ENV): boolean {
   return env === 'development' || env === 'test';
 }
@@ -47,6 +52,9 @@ export function createSmtpEmailAdapter(config: SmtpConfig): EmailAdapter {
     port: config.port,
     secure: config.secure ?? config.port === 465,
     auth: config.user ? { user: config.user, pass: config.pass } : undefined,
+    connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+    socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
   });
 
   return {
@@ -103,10 +111,14 @@ export async function sendInviteEmail(params: {
   tenantName: string;
   acceptUrl: string;
 }): Promise<void> {
-  await getEmailAdapter().send({
-    to: params.to,
-    subject: `You're invited to ${params.tenantName}`,
-    text: `You were invited to ${params.tenantName}. Open this single-use link, then sign in: ${params.acceptUrl}`,
-    acceptUrl: params.acceptUrl,
-  });
+  try {
+    await getEmailAdapter().send({
+      to: params.to,
+      subject: `You're invited to ${params.tenantName}`,
+      text: `You were invited to ${params.tenantName}. Open this single-use link, then sign in: ${params.acceptUrl}`,
+      acceptUrl: params.acceptUrl,
+    });
+  } catch {
+    throw new Error('Invite email could not be sent');
+  }
 }

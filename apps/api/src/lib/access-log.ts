@@ -8,9 +8,7 @@ type MorganTokens = Record<
 /** Combined-style access log without query strings, path tokens, or Referer. */
 export function redactAccessLogUrl(raw: string): string {
   const pathOnly = raw.split('?')[0];
-  return pathOnly
-    .replace(/(\/api\/v1\/auth\/invites\/)[^/]+/gi, '$1[redacted]')
-    .replace(/(\/invite\/)[^/]+/gi, '$1[redacted]');
+  return pathOnly.replace(/(?<!\/seats)(\/invites?\/)[^/]+/gi, '$1[redacted]');
 }
 
 export function accessLogLine(tokens: MorganTokens, req: Request, res: Response): string {

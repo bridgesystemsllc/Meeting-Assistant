@@ -28,12 +28,8 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     return;
   }
 
-  const statusCode = err.statusCode || err.status || 500;
-  const message = process.env.NODE_ENV === 'production'
-    ? 'Internal server error'
-    : err.message;
-
-  res.status(statusCode).json({
-    error: { code: err.code || 'INTERNAL', message },
+  // Never put SMTP/transport codes or raw error text in HTTP 500 bodies.
+  res.status(500).json({
+    error: { code: 'INTERNAL', message: 'Internal server error' },
   });
 };
