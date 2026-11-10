@@ -17,7 +17,9 @@ export function Layout() {
       <aside className="fixed left-0 top-0 flex h-full w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] p-4">
         <div className="mb-8">
           <h1 className="text-base font-semibold tracking-tight">[PRODUCT NAME]</h1>
-          <p className="mt-1 text-xs text-[var(--color-muted)]">{me?.tenant.name ?? 'Meetings'}</p>
+          <p data-testid="tenant-display-name" className="mt-1 text-xs text-[var(--color-muted)]">
+            {me?.tenant.name ?? 'Meetings'}
+          </p>
         </div>
 
         <nav className="space-y-1">

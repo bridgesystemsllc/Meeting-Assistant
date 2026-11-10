@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { hasRequiredRole, MeResponseSchema, GLOBAL_TABLES } from './auth.js';
+import { hasRequiredRole, MeResponseSchema } from './auth.js';
+import { GLOBAL_TABLES } from './db-tables.js';
 
 describe('role matrix', () => {
   it('allows owner for every required role', () => {
