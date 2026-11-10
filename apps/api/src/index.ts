@@ -12,8 +12,10 @@ import morgan from 'morgan';
 import { healthRouter } from './routes/health.js';
 import { meetingsRouter } from './routes/meetings.js';
 import { webhooksRouter } from './routes/webhooks.js';
+import consentRouter from './routes/consent.js';
 import { errorHandler } from './middleware/errors.js';
 import { logger } from './lib/logger.js';
+import { db } from './lib/db.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,9 +30,13 @@ app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Set db pool on app for routes to access
+app.set('db', db);
+
 // Routes
 app.use('/health', healthRouter);
 app.use('/api/meetings', meetingsRouter);
+app.use('/api/consent', consentRouter);
 app.use('/webhooks', webhooksRouter);
 
 // 404 handler

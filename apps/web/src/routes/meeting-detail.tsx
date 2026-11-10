@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Loader2, AlertCircle, Clock } from 'lucide-react';
 import type { MeetingDetailResponse, ActionItem } from '../lib/api';
+import { ConsentStatus } from '../components/ConsentStatus';
 
 type LoadingState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -143,11 +144,17 @@ export function MeetingDetailPage() {
 
       {/* Consent denied state */}
       {meeting.status === 'consent_denied' && (
-        <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-6 mb-6">
-          <h3 className="text-orange-400 font-semibold mb-2">Recording Permission Denied</h3>
-          <p className="text-gray-400 text-sm">
-            The meeting host did not grant recording permission. No transcript is available.
-          </p>
+        <div className="space-y-4 mb-6">
+          <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-6">
+            <h3 className="text-orange-400 font-semibold mb-2">Recording Permission Denied</h3>
+            <p className="text-gray-400 text-sm">
+              Consent was denied for this meeting. No transcript, analysis, or email data has been stored.
+            </p>
+          </div>
+          <ConsentStatus 
+            meetingId={meeting.id} 
+            tenantId={meeting.tenant_id || localStorage.getItem('tenantId') || '00000000-0000-0000-0000-000000000001'} 
+          />
         </div>
       )}
 

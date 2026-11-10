@@ -185,6 +185,47 @@ export const recallService = {
   },
 
   /**
+   * Leave meeting (alias for removeBot, used by consent handler)
+   */
+  async leaveMeeting(botId: string): Promise<void> {
+    return this.removeBot(botId);
+  },
+
+  /**
+   * Delete recording from Recall (for consent denial cleanup)
+   */
+  async deleteRecording(botId: string): Promise<void> {
+    logger.info({ botId }, 'Deleting Recall recording');
+
+    const response = await recallFetch(`/bot/${botId}/delete_media/`, {
+      method: 'POST',
+    });
+
+    if (!response.ok && response.status !== 404 && response.status !== 400) {
+      throw new Error(`Failed to delete recording: ${response.status}`);
+    }
+
+    logger.info({ botId }, 'Recall recording deleted');
+  },
+
+  /**
+   * Delete transcript from Recall (for consent denial cleanup)
+   */
+  async deleteTranscript(botId: string): Promise<void> {
+    logger.info({ botId }, 'Deleting Recall transcript');
+
+    const response = await recallFetch(`/bot/${botId}/delete_transcript/`, {
+      method: 'POST',
+    });
+
+    if (!response.ok && response.status !== 404 && response.status !== 400) {
+      throw new Error(`Failed to delete transcript: ${response.status}`);
+    }
+
+    logger.info({ botId }, 'Recall transcript deleted');
+  },
+
+  /**
    * Formats Recall transcript to our internal format
    */
   formatTranscript(recallTranscript: RecallTranscript): {

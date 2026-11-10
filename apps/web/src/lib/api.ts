@@ -67,6 +67,7 @@ export interface MeetingAnalysis {
 export interface MeetingDetailResponse {
   meeting: {
     id: string;
+    tenant_id: string;
     title: string;
     platform: string;
     meeting_url: string;
@@ -75,6 +76,9 @@ export interface MeetingDetailResponse {
     ended_at: string | null;
     duration_seconds: number | null;
     recall_bot_id: string | null;
+    consent_status?: 'pending' | 'granted' | 'denied';
+    consent_denied_at?: string | null;
+    consent_denied_reason?: string | null;
   };
   transcript: TranscriptResponse | null;
   analysis: MeetingAnalysis | null;

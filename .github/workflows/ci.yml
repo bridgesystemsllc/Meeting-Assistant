@@ -66,6 +66,7 @@ jobs:
       - name: Run migrations
         run: |
           psql -h localhost -U test -d test -f db/migrations/001_initial.sql
+          psql -h localhost -U test -d test -f db/migrations/002_consent.sql
         env:
           PGPASSWORD: test
       - run: npm run test -- --run

@@ -1,6 +1,7 @@
 /**
  * Webhook routes
  * P0-5: Svix-style signature verification. Invalid/unsigned webhooks get 400.
+ * P0-6: Consent denial handling with auto-leave and cleanup.
  */
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
@@ -8,6 +9,17 @@ import { verifyWebhookSignature, requireWebhookSecret } from '../services/webhoo
 import { db } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { RECALL_EVENT_TO_STATUS } from '@meeting-assistant/shared';
+import { recallService } from '../services/recall.js';
+import {
+  getConsentSettings,
+  getStopKeywords,
+  containsStopKeyword,
+  insertConsentEvent,
+  updateMeetingConsentStatus,
+  deleteStoredMeetingData,
+  type ConsentEventType,
+} from '../services/consent.js';
+import { handleConsentDenial as processConsentDenial } from '../services/consent-handler.js';
 
 export const webhooksRouter = Router();
 
@@ -107,6 +119,14 @@ webhooksRouter.post('/recall', async (req: Request & { rawBody?: string }, res: 
         await handleConsentDenied(payload);
         break;
 
+      case 'bot.leave_call':
+        await handleLeaveCall(payload);
+        break;
+
+      case 'bot.transcription.chat_message':
+        await handleChatMessage(payload);
+        break;
+
       case 'bot.done':
       case 'bot.call_ended':
         await handleCallEnded(payload);
@@ -158,15 +178,120 @@ async function handleConsentDenied(payload: Record<string, unknown>): Promise<vo
   const botId = bot?.id as string;
   const metadata = bot?.metadata as Record<string, string>;
   const meetingId = metadata?.internal_meeting_id;
+  const tenantId = metadata?.tenant_id;
 
-  if (meetingId) {
+  if (!meetingId || !tenantId) {
+    logger.warn({ botId }, 'Missing meeting or tenant ID in consent denied event');
+    return;
+  }
+
+  // Use the consent handler for full denial processing
+  const recallClient = {
+    leaveMeeting: (id: string) => recallService.leaveMeeting(id),
+    deleteRecording: (id: string) => recallService.deleteRecording(id),
+    deleteTranscript: (id: string) => recallService.deleteTranscript(id),
+  };
+
+  await processConsentDenial(db, recallClient, {
+    meetingId,
+    tenantId,
+    recallBotId: botId,
+    eventType: 'recording_permission_denied',
+    eventSource: 'recall_webhook',
+  });
+
+  // Also update meeting status
+  await db.query(
+    `UPDATE meetings 
+     SET status = 'consent_denied', updated_at = NOW() 
+     WHERE id = $1`,
+    [meetingId]
+  );
+
+  logger.info({ meetingId, botId }, 'Consent denial processed');
+}
+
+async function handleLeaveCall(payload: Record<string, unknown>): Promise<void> {
+  const data = payload.data as Record<string, unknown>;
+  const bot = data?.bot as Record<string, unknown>;
+  const botId = bot?.id as string;
+  const metadata = bot?.metadata as Record<string, string>;
+  const meetingId = metadata?.internal_meeting_id;
+  const tenantId = metadata?.tenant_id;
+  const subCode = data?.sub_code as string;
+
+  // Check if this is a host removal
+  if (subCode === 'host_removed' && meetingId && tenantId) {
+    logger.info({ meetingId, botId, subCode }, 'Bot removed by host');
+
+    const recallClient = {
+      leaveMeeting: (id: string) => recallService.leaveMeeting(id),
+      deleteRecording: (id: string) => recallService.deleteRecording(id),
+      deleteTranscript: (id: string) => recallService.deleteTranscript(id),
+    };
+
+    await processConsentDenial(db, recallClient, {
+      meetingId,
+      tenantId,
+      recallBotId: botId,
+      eventType: 'bot_removed_by_host',
+      eventSource: 'recall_webhook',
+    });
+
     await db.query(
       `UPDATE meetings 
        SET status = 'consent_denied', updated_at = NOW() 
        WHERE id = $1`,
       [meetingId]
     );
-    logger.info({ meetingId, botId }, 'Meeting marked consent_denied');
+  }
+}
+
+async function handleChatMessage(payload: Record<string, unknown>): Promise<void> {
+  const data = payload.data as Record<string, unknown>;
+  const bot = data?.bot as Record<string, unknown>;
+  const botId = bot?.id as string;
+  const metadata = bot?.metadata as Record<string, string>;
+  const meetingId = metadata?.internal_meeting_id;
+  const tenantId = metadata?.tenant_id;
+
+  const chatData = data?.chat_message as Record<string, unknown>;
+  const message = chatData?.text as string;
+  const senderName = chatData?.sender_name as string;
+
+  if (!message || !meetingId || !tenantId) {
+    return;
+  }
+
+  // Get tenant's stop keywords
+  const settings = await getConsentSettings(db, tenantId);
+  const stopKeywords = getStopKeywords(settings);
+
+  // Check if message contains a stop keyword
+  if (containsStopKeyword(message, stopKeywords)) {
+    logger.info({ meetingId, senderName }, 'Stop keyword detected in chat');
+
+    const recallClient = {
+      leaveMeeting: (id: string) => recallService.leaveMeeting(id),
+      deleteRecording: (id: string) => recallService.deleteRecording(id),
+      deleteTranscript: (id: string) => recallService.deleteTranscript(id),
+    };
+
+    await processConsentDenial(db, recallClient, {
+      meetingId,
+      tenantId,
+      recallBotId: botId,
+      eventType: 'consent_denied_by_keyword',
+      eventSource: 'chat_message',
+      actorName: senderName,
+    });
+
+    await db.query(
+      `UPDATE meetings 
+       SET status = 'consent_denied', updated_at = NOW() 
+       WHERE id = $1`,
+      [meetingId]
+    );
   }
 }
 
