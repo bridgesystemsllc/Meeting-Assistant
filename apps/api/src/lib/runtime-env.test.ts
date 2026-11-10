@@ -30,4 +30,13 @@ describe('runtime env', () => {
     delete process.env.OIDC_STATE_SECRET;
     expect(() => assertApiRuntimeEnv()).toThrow(/OIDC_STATE_SECRET/);
   });
+
+  it('refuses to boot in production without SMTP_HOST', () => {
+    process.env.APP_DATABASE_URL = 'postgres://app@localhost/db';
+    process.env.PUBLIC_BASE_URL = 'https://api.example.com';
+    process.env.OIDC_STATE_SECRET = 'prod-oidc-state-secret';
+    process.env.NODE_ENV = 'production';
+    delete process.env.SMTP_HOST;
+    expect(() => assertApiRuntimeEnv()).toThrow(/SMTP_HOST/);
+  });
 });

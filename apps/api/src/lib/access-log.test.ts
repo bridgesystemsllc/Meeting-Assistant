@@ -23,4 +23,22 @@ describe('access log', () => {
     expect(line).not.toContain('Referer');
     expect(line).not.toContain('mail.example.com');
   });
+
+  it('redacts the live invite token in GET /api/v1/auth/invites/<token>', () => {
+    const rawToken = 'CZvtGq2sLp1iE-MYEYPm4Hp4fkndjCuwsKMATLzPc3Y';
+    const tokens = {
+      url: () => `/api/v1/auth/invites/${rawToken}`,
+      'remote-addr': () => '127.0.0.1',
+      'remote-user': () => undefined,
+      date: () => '10/Nov/2026:00:00:00 +0000',
+      method: () => 'GET',
+      'http-version': () => '1.1',
+      status: () => '200',
+      res: () => '186',
+      'user-agent': () => 'test',
+    };
+    const line = accessLogLine(tokens, {} as Request, {} as Response);
+    expect(line).toContain('/api/v1/auth/invites/[redacted]');
+    expect(line).not.toContain(rawToken);
+  });
 });
