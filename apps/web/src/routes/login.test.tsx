@@ -41,4 +41,9 @@ describe('LoginPage', () => {
     renderLogin({}, '/login?error=no_access');
     expect(screen.getByRole('alert').textContent).toMatch(/ask your admin/i);
   });
+
+  it('shows unverified-email error state', () => {
+    renderLogin({}, '/login?error=unverified');
+    expect(screen.getByRole('alert').textContent).toMatch(/not verified/i);
+  });
 });

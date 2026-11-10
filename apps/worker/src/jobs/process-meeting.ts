@@ -4,11 +4,14 @@
  *
  * FORGE must keep runTenantJob around every DB statement and require tenantId
  * on the job payload. Look up users via lookup_user_contact(), not SELECT FROM users.
+ * A 0-row UPDATE is a failure (wrong tenant or missing meeting), not success.
  */
 
 import type { Job } from 'bullmq';
 import { logger } from '../lib/logger.js';
 import { runTenantJob } from '../lib/tenantJob.js';
+
+export const MEETING_NOT_IN_TENANT = 'MEETING_NOT_IN_TENANT';
 
 export interface ProcessMeetingData {
   meetingId: string;
@@ -33,16 +36,19 @@ export interface ProcessMeetingResult {
 export async function processMeeting(
   job: Job<ProcessMeetingData>
 ): Promise<ProcessMeetingResult> {
-  const { meetingId, recallBotId } = job.data;
+  const { meetingId, recallBotId, tenantId } = job.data;
 
-  logger.info({ meetingId, recallBotId, tenantId: job.data.tenantId }, 'Starting meeting processing (stub)');
+  logger.info({ meetingId, recallBotId, tenantId }, 'Starting meeting processing (stub)');
 
   try {
     await runTenantJob(job.data, async (client) => {
-      await client.query(
-        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-        ['processing', meetingId]
+      const updated = await client.query(
+        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+        ['processing', meetingId, tenantId]
       );
+      if (!updated.rowCount) {
+        throw new Error(MEETING_NOT_IN_TENANT);
+      }
     });
 
     await job.updateProgress(100);
@@ -56,8 +62,8 @@ export async function processMeeting(
     try {
       await runTenantJob(job.data, async (client) => {
         await client.query(
-          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-          ['failed', meetingId]
+          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          ['failed', meetingId, tenantId]
         );
       });
     } catch (dbErr) {

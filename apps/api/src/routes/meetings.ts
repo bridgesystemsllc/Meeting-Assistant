@@ -1,6 +1,7 @@
 /**
  * Meetings API routes.
- * Every handler runs DB work under withTenant(session tenant).
+ * Every handler runs DB work under withTenant(session tenant) and filters
+ * tenant_id in SQL (defense in depth with FORCE RLS).
  * Cross-tenant ids return 404, never 403 (spec §5.7 / P0-3).
  *
  * FORGE Phase 1 POST /api/v1/meetings (Recall bot create) must keep this
@@ -12,27 +13,44 @@
  */
 
 import { Router } from 'express';
+import { z } from 'zod';
+import { hasRequiredRole } from '@meeting-assistant/shared';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
-import { badRequest, notFound, parseUuidParam, unauthenticated } from '../lib/http-error.js';
+import { badRequest, forbidden, notFound, sendError, unauthenticated } from '../lib/http-error.js';
+import { recordAudit } from '../lib/audit.js';
 import { requireActiveSeat } from '../lib/seats.js';
 
 export const meetingsRouter = Router();
 
 meetingsRouter.use(requireActiveSeat);
 
-function requireTenantId(req: { auth?: { tenant: { id: string } } }): string | null {
-  return req.auth?.tenant.id ?? null;
+const UuidSchema = z.string().uuid();
+const MAX_LIMIT = 100;
+
+function parseLimitOffset(query: RequestQuery): { limit: number; offset: number } | null {
+  const rawLimit = query.limit === undefined ? 20 : Number(query.limit);
+  const rawOffset = query.offset === undefined ? 0 : Number(query.offset);
+  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
+    return null;
+  }
+  const limit = Math.min(MAX_LIMIT, Math.max(1, Math.trunc(rawLimit)));
+  const offset = Math.max(0, Math.trunc(rawOffset));
+  return { limit, offset };
 }
 
-/**
- * GET /api/v1/meetings
- */
+type RequestQuery = Record<string, unknown>;
+
 meetingsRouter.get('/', async (req, res) => {
-  const { limit = '20', offset = '0' } = req.query;
-  const tenantId = requireTenantId(req);
+  const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
+    return;
+  }
+
+  const page = parseLimitOffset(req.query as RequestQuery);
+  if (!page) {
+    badRequest(res, 'INVALID_LIMIT', 'limit and offset must be numbers');
     return;
   }
 
@@ -45,10 +63,12 @@ meetingsRouter.get('/', async (req, res) => {
            ma.summary, ma.meeting_sentiment, ma.engagement_score,
            COALESCE(jsonb_array_length(ma.action_items), 0) as action_item_count
          FROM meetings m
-         LEFT JOIN meeting_analysis ma ON ma.meeting_id = m.id
+         LEFT JOIN meeting_analysis ma
+           ON ma.meeting_id = m.id AND ma.tenant_id = m.tenant_id
+         WHERE m.tenant_id = $1
          ORDER BY m.created_at DESC
-         LIMIT $1 OFFSET $2`,
-        [parseInt(limit as string, 10), parseInt(offset as string, 10)]
+         LIMIT $2 OFFSET $3`,
+        [tenantId, page.limit, page.offset]
       )
     );
 
@@ -58,35 +78,41 @@ meetingsRouter.get('/', async (req, res) => {
     });
   } catch (err) {
     logger.error({ err }, 'Failed to list meetings');
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to fetch meetings' } });
+    sendError(res, 500, 'INTERNAL', 'Failed to fetch meetings');
   }
 });
 
-/**
- * GET /api/v1/meetings/:id
- * Missing or cross-tenant → 404 NOT_FOUND.
- */
 meetingsRouter.get('/:id', async (req, res) => {
-  const id = parseUuidParam(req.params.id);
-  const tenantId = requireTenantId(req);
+  const { id } = req.params;
+  const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
     return;
   }
-  if (!id) {
+
+  if (!UuidSchema.safeParse(id).success) {
     badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 
   try {
     const loaded = await withTenant(tenantId, async (client) => {
-      const meetingResult = await client.query('SELECT * FROM meetings WHERE id = $1', [id]);
+      const meetingResult = await client.query(
+        'SELECT * FROM meetings WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
       if (meetingResult.rows.length === 0) {
         return null;
       }
       const [transcriptResult, analysisResult] = await Promise.all([
-        client.query('SELECT * FROM transcripts WHERE meeting_id = $1', [id]),
-        client.query('SELECT * FROM meeting_analysis WHERE meeting_id = $1', [id]),
+        client.query('SELECT * FROM transcripts WHERE meeting_id = $1 AND tenant_id = $2', [
+          id,
+          tenantId,
+        ]),
+        client.query('SELECT * FROM meeting_analysis WHERE meeting_id = $1 AND tenant_id = $2', [
+          id,
+          tenantId,
+        ]),
       ]);
       return {
         meeting: meetingResult.rows[0],
@@ -132,37 +158,64 @@ meetingsRouter.get('/:id', async (req, res) => {
     });
   } catch (err) {
     logger.error({ err, id }, 'Failed to get meeting');
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to fetch meeting' } });
+    sendError(res, 500, 'INTERNAL', 'Failed to fetch meeting');
   }
 });
 
 /**
  * DELETE /api/v1/meetings/:id
- * Cross-tenant → 404. Write isolation is enforced by RLS WITH CHECK / USING.
+ * Cross-tenant → 404. Same-tenant member who is not admin/owner and not the
+ * meeting owner → 403. Audit stub is P2-4's drop-in.
  */
 meetingsRouter.delete('/:id', async (req, res) => {
-  const id = parseUuidParam(req.params.id);
-  const tenantId = requireTenantId(req);
-  if (!tenantId) {
+  const { id } = req.params;
+  const tenantId = req.auth?.tenant.id;
+  const actor = req.auth;
+  if (!tenantId || !actor) {
     unauthenticated(res);
     return;
   }
-  if (!id) {
+  if (!UuidSchema.safeParse(id).success) {
     badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
     return;
   }
 
   try {
-    const result = await withTenant(tenantId, (client) =>
-      client.query('DELETE FROM meetings WHERE id = $1', [id])
-    );
-    if (!result.rowCount) {
+    const deleted = await withTenant(tenantId, async (client) => {
+      const existing = await client.query<{ id: string; user_id: string }>(
+        'SELECT id, user_id FROM meetings WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
+      if (existing.rowCount === 0) {
+        return 'missing' as const;
+      }
+      const meetingOwner = existing.rows[0].user_id === actor.user.id;
+      const privileged = hasRequiredRole(actor.role, 'admin');
+      if (!privileged && !meetingOwner) {
+        return 'forbidden' as const;
+      }
+      await client.query('DELETE FROM meetings WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+      return 'deleted' as const;
+    });
+
+    if (deleted === 'missing') {
       notFound(res, 'Meeting not found');
       return;
     }
+    if (deleted === 'forbidden') {
+      forbidden(res);
+      return;
+    }
+
+    await recordAudit({
+      tenantId,
+      actorUserId: actor.user.id,
+      action: 'meeting.delete',
+      target: id,
+    });
     res.status(204).send();
   } catch (err) {
     logger.error({ err, id }, 'Failed to delete meeting');
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Failed to delete meeting' } });
+    sendError(res, 500, 'INTERNAL', 'Failed to delete meeting');
   }
 });

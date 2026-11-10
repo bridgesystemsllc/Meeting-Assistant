@@ -35,6 +35,7 @@ export const AuthErrorCodeSchema = z.enum([
   'INVITE_EXPIRED',
   'INVITE_REVOKED',
   'INVITE_WRONG_TENANT',
+  'EMAIL_UNVERIFIED',
   'OIDC_FAILED',
   'SEAT_INACTIVE',
   'SEAT_LIMIT_REACHED',

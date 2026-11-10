@@ -3,9 +3,9 @@
 -- app.tenant_id) and on global tables (deny-by-default for the app role).
 -- Narrow SECURITY DEFINER lookups for webhooks / jobs. Pinned search_path.
 --
--- FORCE RLS applies to the table owner. SECURITY DEFINER functions in this
--- file are owned by the migrator, who must be superuser or BYPASSRLS so
--- session/webhook lookups still work with no request tenant set.
+-- FORCE RLS applies to the table owner. 004 grants auth_definer policies to
+-- the migrator on global/auth tables; 230000 adds definer_access on tenant
+-- tables so SECURITY DEFINER lookups work without BYPASSRLS.
 
 -- =============================================
 -- TENANT TABLES: ENABLE + FORCE + isolation policy
@@ -39,8 +39,9 @@ BEGIN
 END $$;
 
 -- =============================================
--- GLOBAL TABLES: ENABLE + FORCE, no policies (deny)
--- App role already has REVOKE ALL from P2-1.
+-- GLOBAL TABLES: ENABLE + FORCE (user_identities included).
+-- App role stays REVOKEd. 004's owner-only auth_definer policies make FORCE
+-- compatible with a NOSUPERUSER NOBYPASSRLS migrator.
 -- =============================================
 
 DO $$
@@ -50,6 +51,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
     'tenants',
     'users',
+    'user_identities',
     'webhook_events',
     'sessions',
     'oidc_login_state'

@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { hasRequiredRole, type Role } from '@meeting-assistant/shared';
 import { loadSession, readSessionToken, refreshIdleTtl, toMeResponse } from '../lib/session.js';
-import { forbidden, unauthenticated } from '../lib/http-error.js';
+import { forbidden, seatInactive, unauthenticated } from '../lib/http-error.js';
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -13,6 +13,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
     const me = toMeResponse(ctx);
     if (!me) {
+      if (ctx.memberships.length > 0) {
+        seatInactive(res);
+        return;
+      }
       unauthenticated(res, 'No access: ask your admin');
       return;
     }
