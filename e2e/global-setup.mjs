@@ -43,6 +43,7 @@ export default async function globalSetup() {
     token.payload.email = 'owner@example.com';
     token.payload.email_verified = true;
     token.payload.name = 'Avery Owner';
+    token.payload.sub = 'mock-sub-owner@example.com';
     token.payload.tid = 'mock-tenant';
   });
   mock.service.on('beforeUserinfo', (userInfoResponse) => {
@@ -55,18 +56,19 @@ export default async function globalSetup() {
     NODE_ENV: 'development',
     PORT: String(API_PORT),
     DATABASE_URL: ownerUrl,
-    DATABASE_APP_URL: appUrl.toString(),
+    APP_DATABASE_URL: appUrl.toString(),
     PG_POOL_MAX: '4',
     COOKIE_SECURE: 'false',
     FRONTEND_URL: 'http://127.0.0.1:4173',
     OIDC_ALLOW_MOCK: 'true',
+    OIDC_STATE_SECRET: 'e2e-oidc-state-secret',
+    PUBLIC_BASE_URL: `http://127.0.0.1:${API_PORT}`,
     GOOGLE_CLIENT_ID: 'test-google-client',
     GOOGLE_CLIENT_SECRET: 'test-google-secret',
     GOOGLE_ISSUER: issuerUrl,
     MS_CLIENT_ID: 'test-ms-client',
     MS_CLIENT_SECRET: 'test-ms-secret',
     MS_ISSUER: issuerUrl,
-    OIDC_REDIRECT_BASE: `http://127.0.0.1:${API_PORT}`,
     LOG_LEVEL: 'silent',
     AUDIT_EMAIL_HMAC_KEY: 'test-audit-email-hmac-key',
   };

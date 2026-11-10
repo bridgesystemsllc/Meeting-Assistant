@@ -1,16 +1,15 @@
 /**
- * Email adapter: log transport (default) and SMTP interface. No vendor provider.
- * Dev/log logs the accept link and stores no secrets. SMTP is env-only.
+ * Email adapter: log transport (dev/test) and SMTP from env. No vendor provider.
+ * Log transport never logs acceptUrl, tokens, or message bodies.
+ * Outside development/test the log transport is refused unless SMTP_HOST is set.
  */
 
 import nodemailer from 'nodemailer';
 import type { EmailAdapter, EmailMessage, SmtpConfig } from '@meeting-assistant/shared';
 import { logger } from './logger.js';
 
-function acceptUrlFrom(message: EmailMessage): string | undefined {
-  if (message.acceptUrl) return message.acceptUrl;
-  const match = message.text.match(/https?:\/\/\S+/);
-  return match?.[0];
+export function allowLogEmailTransport(env = process.env.NODE_ENV): boolean {
+  return env === 'development' || env === 'test';
 }
 
 export function createLogEmailAdapter(): EmailAdapter {
@@ -21,7 +20,6 @@ export function createLogEmailAdapter(): EmailAdapter {
         {
           to: message.to,
           subject: message.subject,
-          acceptUrl: acceptUrlFrom(message),
           transport: 'log',
         },
         'email dispatched'
@@ -77,13 +75,23 @@ export function createEmailAdapter(): EmailAdapter {
       from: process.env.FROM_EMAIL || 'noreply@example.com',
     });
   }
-  return createLogEmailAdapter();
+  if (allowLogEmailTransport()) {
+    return createLogEmailAdapter();
+  }
+  throw new Error('SMTP_HOST is required outside development; log email transport is disabled');
 }
 
-let currentAdapter: EmailAdapter = createEmailAdapter();
+let currentAdapter: EmailAdapter | undefined;
+
+function defaultAdapter(): EmailAdapter {
+  if (!currentAdapter) {
+    currentAdapter = createEmailAdapter();
+  }
+  return currentAdapter;
+}
 
 export function getEmailAdapter(): EmailAdapter {
-  return currentAdapter;
+  return defaultAdapter();
 }
 
 export function setEmailAdapter(adapter: EmailAdapter): void {

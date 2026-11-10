@@ -35,11 +35,13 @@ export const AuthErrorCodeSchema = z.enum([
   'INVITE_EXPIRED',
   'INVITE_REVOKED',
   'INVITE_WRONG_TENANT',
+  'EMAIL_UNVERIFIED',
   'OIDC_FAILED',
   'SEAT_INACTIVE',
   'SEAT_LIMIT_REACHED',
   'LAST_OWNER',
   'ALREADY_MEMBER',
+  'MEMBER_DEACTIVATED',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCodeSchema>;
 

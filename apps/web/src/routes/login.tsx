@@ -5,6 +5,7 @@ import { loginUrl } from '../lib/auth';
 
 const ERROR_COPY: Record<string, string> = {
   no_access: 'No access: ask your admin.',
+  seat_inactive: 'This seat is inactive. Ask your admin.',
   invalid_state: 'Sign-in expired. Try again.',
   invalid_invite: 'That invite link is invalid or has already been used.',
   invite_used: 'That invite link has already been used.',
@@ -12,6 +13,9 @@ const ERROR_COPY: Record<string, string> = {
   invite_revoked: 'That invite was revoked.',
   invite_tenant: 'That invite belongs to a different workspace.',
   invite_email: 'That invite was issued to a different email.',
+  seat_limit: 'All seats are in use. Ask your admin.',
+  member_deactivated: 'This seat is deactivated. Ask your admin to reactivate it.',
+  unverified: 'That email is not verified with the identity provider.',
   oidc: 'Sign-in failed. Try again.',
 };
 
