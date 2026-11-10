@@ -162,6 +162,30 @@ describe('auth integration', () => {
     expect(['INVALID_PKCE', 'OIDC_FAILED']).toContain(res.body.error.code);
   });
 
+  it('rejects an id_token whose iat is older than the max age', async () => {
+    configureMockUser(stack.mockOidc, { email: 'member@example.com' });
+    stack.mockOidc.service.on('beforeTokenSigning', (token) => {
+      token.payload.iat = Math.floor(Date.now() / 1000) - 10_000;
+    });
+    const agent = request.agent(`http://127.0.0.1:${apiPort}`);
+    const done = await finishOidc(agent, 'google');
+    expect(done.status).toBe(400);
+    expect(done.body.error.code).toBe('OIDC_FAILED');
+    configureMockUser(stack.mockOidc, { email: 'member@example.com' });
+  });
+
+  it('rejects an id_token whose iat is too far in the future', async () => {
+    configureMockUser(stack.mockOidc, { email: 'member@example.com' });
+    stack.mockOidc.service.on('beforeTokenSigning', (token) => {
+      token.payload.iat = Math.floor(Date.now() / 1000) + 3_600;
+    });
+    const agent = request.agent(`http://127.0.0.1:${apiPort}`);
+    const done = await finishOidc(agent, 'google');
+    expect(done.status).toBe(400);
+    expect(done.body.error.code).toBe('OIDC_FAILED');
+    configureMockUser(stack.mockOidc, { email: 'member@example.com' });
+  });
+
   it('completes OIDC login for an active member and serves /me', async () => {
     clearOidcCache();
     configureMockUser(stack.mockOidc, { email: 'owner@example.com', name: 'Avery Owner' });

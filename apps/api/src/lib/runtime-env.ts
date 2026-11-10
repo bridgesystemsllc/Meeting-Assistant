@@ -31,6 +31,9 @@ export function assertApiRuntimeEnv(): void {
   appDatabaseUrl();
   if (process.env.NODE_ENV === 'production') {
     publicBaseUrl();
+    if (!process.env.OIDC_STATE_SECRET) {
+      throw new RuntimeConfigError('OIDC_STATE_SECRET is required in production');
+    }
     if (process.env.OIDC_ALLOW_MOCK === 'true') {
       throw new RuntimeConfigError('OIDC_ALLOW_MOCK cannot be set when NODE_ENV=production');
     }
