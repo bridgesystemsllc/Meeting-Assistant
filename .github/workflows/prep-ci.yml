@@ -32,6 +32,18 @@ jobs:
             exit 1
           fi
           echo "No secrets detected in docs"
+          
+      - name: Check for forbidden brand strings
+        run: |
+          # Denylist check for brand strings (case-insensitive)
+          # Pattern avoids literal brand name in the rule itself
+          PATTERN='[Kk][Aa][Rr][Ee][Vv]'
+          echo "Checking for forbidden brand strings..."
+          if grep -rEi "$PATTERN" docs/ frontend/ *.jsx *.js 2>/dev/null | grep -v '.github/'; then
+            echo "ERROR: Forbidden brand strings found in source files"
+            exit 1
+          fi
+          echo "No forbidden brand strings found"
 
   frontend-build:
     runs-on: ubuntu-latest

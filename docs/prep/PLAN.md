@@ -228,12 +228,12 @@ meeting-assistant/
 
 | File | Action |
 |------|--------|
-| `frontend/lib/mock-data.ts` | SCRUB "KarEve" string |
+| `frontend/lib/mock-data.ts` | SCRUB [BRAND] string |
 | `frontend/app/(dashboard)/settings/page.tsx` | SCRUB hardcoded owner |
 | `frontend/components/dashboard/Sidebar.tsx` | SCRUB hardcoded owner |
 | `frontend/app/(marketing)/pricing/page.tsx` | REMOVE price literals |
 | `frontend/components/marketing/SocialProof.tsx` | REMOVE fake stats |
-| `docs/plans/*.md` | SCRUB KarEve, owner email, prices |
+| `docs/plans/*.md` | SCRUB [BRAND], owner email, prices |
 
 ---
 
@@ -572,4 +572,4 @@ Per spec §8, each P0 maps to specific tests:
 | P0-5 | Unit tests: 400 on unsigned/invalid; boot fails without secret |
 | P0-6 | Unit tests: bot name validation; integration: consent_denied path |
 | P0-7 | grep invariant test: no price literals |
-| P0-8 | grep invariant test: no "KarEve" outside .git; no hardcoded owner |
+| P0-8 | grep invariant test: no [BRAND] outside .git; no hardcoded owner |
