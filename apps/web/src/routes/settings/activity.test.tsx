@@ -40,7 +40,7 @@ const firstPage = {
       },
       target_type: 'invite',
       target_id: '00000000-0000-0000-0000-0000000000bb',
-      metadata: { email: 'jordan@example.com' },
+      metadata: { email_masked: 'j***@example.com' },
     },
   ],
   nextCursor: 'cursor-1',
@@ -91,7 +91,7 @@ describe('ActivityPage', () => {
     });
     expect(screen.getByRole('heading', { name: 'Activity' })).toBeTruthy();
     expect(screen.getByText('Avery Owner')).toBeTruthy();
-    expect(screen.getByText('jordan@example.com')).toBeTruthy();
+    expect(screen.getByText('j***@example.com')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Activity' }).getAttribute('aria-current')).toBe('page');
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));

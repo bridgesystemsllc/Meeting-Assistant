@@ -68,6 +68,7 @@ export default async function globalSetup() {
     MS_ISSUER: issuerUrl,
     OIDC_REDIRECT_BASE: `http://127.0.0.1:${API_PORT}`,
     LOG_LEVEL: 'silent',
+    AUDIT_EMAIL_HMAC_KEY: 'test-audit-email-hmac-key',
   };
 
   const child = spawn(process.execPath, ['--import', 'tsx', 'apps/api/src/index.ts'], {

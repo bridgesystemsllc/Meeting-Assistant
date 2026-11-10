@@ -244,7 +244,8 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
       revoked_at: Date | null;
     }>(
       `SELECT id, email, role, accepted_at, revoked_at
-       FROM invites WHERE id = $1`,
+       FROM invites WHERE id = $1
+       FOR UPDATE`,
       [inviteId]
     );
     const invite = found.rows[0];
@@ -287,6 +288,9 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
 }
 
 export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<SeatsResponse> {
+  // Repeating revoke after success returns 200 with no new audit row.
+  // Concurrent callers serialize on SELECT FOR UPDATE so exactly one
+  // state change and one audit row is recorded.
   return withTenant(auth.tenant.id, async (client) => {
     const found = await client.query<{
       id: string;
@@ -294,7 +298,10 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
       role: InviteRequest['role'];
       accepted_at: Date | null;
       revoked_at: Date | null;
-    }>(`SELECT id, email, role, accepted_at, revoked_at FROM invites WHERE id = $1`, [inviteId]);
+    }>(
+      `SELECT id, email, role, accepted_at, revoked_at FROM invites WHERE id = $1 FOR UPDATE`,
+      [inviteId]
+    );
     const invite = found.rows[0];
     if (!invite) {
       throw new HttpError(404, 'NOT_FOUND', 'Invite not found');
@@ -317,13 +324,16 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
 }
 
 export async function deactivateMember(auth: MeResponse, membershipId: string): Promise<SeatsResponse> {
+  // Repeating deactivate after success returns 200 with no new audit row.
+  // Concurrent callers serialize on SELECT FOR UPDATE so exactly one
+  // state change and one audit row is recorded.
   return withTenant(auth.tenant.id, async (client) => {
     const found = await client.query<{
       id: string;
       user_id: string;
       role: SeatMember['role'];
       seat_status: SeatMember['seat_status'];
-    }>(`SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1`, [membershipId]);
+    }>(`SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1 FOR UPDATE`, [membershipId]);
     const membership = found.rows[0];
     if (!membership) {
       throw new HttpError(404, 'NOT_FOUND', 'Member not found');
@@ -364,7 +374,7 @@ export async function reactivateMember(auth: MeResponse, membershipId: string): 
       user_id: string;
       role: SeatMember['role'];
       seat_status: SeatMember['seat_status'];
-    }>(`SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1`, [membershipId]);
+    }>(`SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1 FOR UPDATE`, [membershipId]);
     const membership = found.rows[0];
     if (!membership) {
       throw new HttpError(404, 'NOT_FOUND', 'Member not found');

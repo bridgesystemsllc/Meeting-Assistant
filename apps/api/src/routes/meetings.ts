@@ -12,6 +12,7 @@
  */
 
 import { Router } from 'express';
+import { recordAudit } from '../lib/audit.js';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { notFound, unauthenticated } from '../lib/http-error.js';
@@ -145,9 +146,19 @@ meetingsRouter.delete('/:id', async (req, res) => {
   }
 
   try {
-    const result = await withTenant(tenantId, (client) =>
-      client.query('DELETE FROM meetings WHERE id = $1', [id])
-    );
+    const result = await withTenant(tenantId, async (client) => {
+      const deleted = await client.query('DELETE FROM meetings WHERE id = $1 RETURNING id', [id]);
+      if (!deleted.rowCount) {
+        return deleted;
+      }
+      await recordAudit(client, {
+        actorUserId: req.auth?.user.id ?? null,
+        action: 'meeting.deleted',
+        targetType: 'meeting',
+        targetId: id,
+      });
+      return deleted;
+    });
     if (!result.rowCount) {
       notFound(res, 'Meeting not found');
       return;

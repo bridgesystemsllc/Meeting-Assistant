@@ -14,7 +14,7 @@ import {
 } from '../lib/auth-db.js';
 import { buildAuthorizationRequest, exchangeAuthorizationCode, getProviderConfig } from '../lib/oidc.js';
 import { recordAudit } from '../lib/audit.js';
-import { withTenant } from '../lib/db.js';
+import { db, withTenant } from '../lib/db.js';
 import { issueSession, loadSession, readSessionToken, revokeSession } from '../lib/session.js';
 
 export const authRouter = Router();
@@ -150,6 +150,23 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
         codeVerifier: stored.code_verifier || '',
       });
     } catch (err) {
+      if (stored.invite_token_hash) {
+        const preview = await lookupInvite(stored.invite_token_hash, null);
+        if (preview.tenant?.id) {
+          try {
+            await withTenant(preview.tenant.id, (tx) =>
+              recordAudit(tx, {
+                action: 'failed-login',
+                targetType: 'invite',
+                targetId: preview.id ?? null,
+                metadata: { code: err instanceof HttpError ? err.code : 'OIDC_FAILED' },
+              })
+            );
+          } catch (auditErr) {
+            logger.error({ err: auditErr }, 'failed-login audit failed');
+          }
+        }
+      }
       if (err instanceof HttpError) {
         sendError(res, err.statusCode, err.code, err.message);
         return;
@@ -159,16 +176,40 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 
     const user = await upsertUser(claims.email, claims.name);
     let memberships = await membershipsForEmail(user.email);
-    let acceptedInvite: { membership_id?: string; tenant_id?: string } | null = null;
 
     if (stored.invite_token_hash) {
-      const accepted = await acceptInvite(stored.invite_token_hash, user.id, user.email);
+      const preview = await lookupInvite(stored.invite_token_hash, null);
+      const accepted = await db.transaction(async (tx) => {
+        const result = await acceptInvite(stored.invite_token_hash!, user.id, user.email, tx);
+        const tenantId = result.tenant_id ?? preview.tenant?.id ?? null;
+        if (tenantId) {
+          await tx.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+          if (result.ok) {
+            await recordAudit(tx, {
+              actorUserId: user.id,
+              action: 'invite.accepted',
+              targetType: 'membership',
+              targetId: result.membership_id ?? null,
+              email: user.email,
+            });
+          } else {
+            await recordAudit(tx, {
+              actorUserId: user.id,
+              action: 'failed-invite',
+              targetType: 'invite',
+              targetId: preview.id ?? null,
+              email: user.email,
+              metadata: { code: result.code },
+            });
+          }
+        }
+        return result;
+      });
       if (!accepted.ok) {
         logger.info({ code: accepted.code }, 'invite acceptance failed');
         redirectToLogin(res, INVITE_ERROR_QUERY[accepted.code ?? 'INVALID_INVITE'] ?? 'invalid_invite');
         return;
       }
-      acceptedInvite = accepted;
       memberships = await membershipsForEmail(user.email);
     }
 
@@ -187,17 +228,6 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       previousToken: previous,
     });
 
-    if (acceptedInvite?.tenant_id) {
-      await withTenant(acceptedInvite.tenant_id, (tx) =>
-        recordAudit(tx, {
-          actorUserId: user.id,
-          action: 'invite.accepted',
-          targetType: 'membership',
-          targetId: acceptedInvite?.membership_id ?? null,
-          metadata: { email: user.email },
-        })
-      );
-    }
     await withTenant(selected.tenant.id, (tx) =>
       recordAudit(tx, {
         actorUserId: user.id,
@@ -217,17 +247,21 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 async function handleLogout(req: Request, res: Response, wantsJson: boolean): Promise<void> {
   const token = readSessionToken(req.cookies);
   const ctx = token ? await loadSession(token) : null;
-  if (ctx?.user && ctx.active_tenant_id) {
-    await withTenant(ctx.active_tenant_id, (tx) =>
-      recordAudit(tx, {
-        actorUserId: ctx.user.id,
-        action: 'logout',
-        targetType: 'user',
-        targetId: ctx.user.id,
-      })
-    );
-  }
   const cleared = await revokeSession(token);
+  if (ctx?.user && ctx.active_tenant_id) {
+    try {
+      await withTenant(ctx.active_tenant_id, (tx) =>
+        recordAudit(tx, {
+          actorUserId: ctx.user.id,
+          action: 'logout',
+          targetType: 'user',
+          targetId: ctx.user.id,
+        })
+      );
+    } catch (err) {
+      logger.error({ err }, 'logout audit failed');
+    }
+  }
   res.setHeader('Set-Cookie', cleared);
   if (wantsJson) {
     res.json({ ok: true });

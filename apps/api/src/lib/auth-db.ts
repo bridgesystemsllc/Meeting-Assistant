@@ -3,7 +3,14 @@
  * Global tables are not queried directly.
  */
 
+import type pg from 'pg';
 import { db } from './db.js';
+
+type AuthQueryClient = Pick<pg.PoolClient, 'query'>;
+
+function exec(client?: AuthQueryClient): AuthQueryClient {
+  return client ?? db;
+}
 
 export interface AuthUserRow {
   id: string;
@@ -120,9 +127,10 @@ export async function deleteSession(tokenHash: string): Promise<void> {
 export async function acceptInvite(
   tokenHash: string,
   userId: string,
-  email: string
+  email: string,
+  client?: AuthQueryClient
 ): Promise<{ ok: boolean; code?: string; membership_id?: string; tenant_id?: string; role?: string }> {
-  const result = await db.query<{
+  const result = await exec(client).query<{
     auth_accept_invite: {
       ok: boolean;
       code?: string;

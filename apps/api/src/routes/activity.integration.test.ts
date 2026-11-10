@@ -2,14 +2,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { EmailMessage } from '@meeting-assistant/shared';
 import { applyAuthEnv, configureMockUser, startMockOidc, startPostgres, type TestStack } from '../test/harness.js';
-import { recordAudit } from '../lib/audit.js';
-import { resetPools, withTenant } from '../lib/db.js';
+import { purgeAuditTenant, purgeAuditUser, recordAudit } from '../lib/audit.js';
+import { getAppPool, getOwnerPool, resetPools, withTenant } from '../lib/db.js';
 import { clearOidcCache } from '../lib/oidc.js';
 import { createCapturingEmailAdapter, setEmailAdapter } from '../lib/email.js';
 
 const ACME = '00000000-0000-0000-0000-000000000010';
 const LUMEN = '00000000-0000-0000-0000-000000000001';
 const ACME_OWNER = '00000000-0000-0000-0000-000000000011';
+const LUMEN_OWNER = '00000000-0000-0000-0000-000000000002';
 const MEMBERSHIP_MEMBER = '00000000-0000-0000-0000-000000000024';
 
 function tokenFrom(message: EmailMessage | undefined): string {
@@ -142,10 +143,12 @@ describe('activity integration', () => {
       expect(actions, action).toContain(action);
     }
 
-    const sent = activity.body.items.find((item: { action: string; metadata?: { email?: string } }) => {
-      return item.action === 'invite.sent' && item.metadata?.email === 'audit.invite@example.com';
+    const sent = activity.body.items.find((item: { action: string; metadata?: { email_masked?: string } }) => {
+      return item.action === 'invite.sent' && item.metadata?.email_masked === 'a***@example.com';
     });
     expect(JSON.stringify(sent)).not.toMatch(/token/i);
+    expect(JSON.stringify(sent)).not.toContain('audit.invite@example.com');
+    expect(JSON.stringify(activity.body)).not.toMatch(/email_hmac/i);
     expect(sent.actor.email).toBe('owner@example.com');
   });
 
@@ -170,16 +173,27 @@ describe('activity integration', () => {
     expect(emails).not.toContain('audit.invite@example.com');
 
     const acmeActivity = await acme.get('/api/v1/tenant/activity').query({ action: 'invite.sent', limit: 100 });
+    const acmeIds = new Set(
+      (acmeActivity.body.items as { id: string; metadata?: { email_masked?: string } }[]).map((item) => item.id)
+    );
     expect(
       acmeActivity.body.items.some(
-        (item: { metadata?: { email?: string } }) => item.metadata?.email === 'audit.cross@example.com'
+        (item: { metadata?: { email_masked?: string } }) => item.metadata?.email_masked === 'a***@example.com'
       )
     ).toBe(true);
 
+    const lumenIds = (lumenActivity.body.items as { id: string }[]).map((item) => item.id);
+    expect(lumenIds.some((id) => acmeIds.has(id))).toBe(false);
+
+    const hashed = await getOwnerPool().query(
+      `SELECT id FROM audit_events WHERE tenant_id = $1 AND action = 'invite.sent' AND email_masked = $2`,
+      [ACME, 'a***@example.com']
+    );
+    expect(hashed.rowCount).toBeGreaterThan(0);
+
     await withTenant(LUMEN, async (client) => {
-      const visible = await client.query<{ email: string | null }>(
-        `SELECT metadata->>'email' AS email FROM audit_events WHERE metadata->>'email' = $1`,
-        ['audit.cross@example.com']
+      const visible = await client.query(
+        `SELECT 1 FROM audit_events WHERE email_masked IS NOT NULL AND email_hmac IS NOT NULL`
       );
       expect(visible.rowCount).toBe(0);
 
@@ -238,5 +252,201 @@ describe('activity integration', () => {
       limit: 100,
     });
     expect(stillThere.body.items.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('returns 400 for a bad cursor without leaking SQLSTATE', async () => {
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const junk = await admin.get('/api/v1/tenant/activity').query({ cursor: 'not-a-cursor' });
+    expect(junk.status).toBe(400);
+    expect(junk.body.error.code).toBe('VALIDATION_ERROR');
+    expect(JSON.stringify(junk.body)).not.toMatch(/SQLSTATE|22P02|invalid input syntax/i);
+
+    const badUuid = Buffer.from(JSON.stringify({ createdAt: '2026-11-10T00:00:00.000Z', id: 'nope' })).toString(
+      'base64url'
+    );
+    const invalid = await admin.get('/api/v1/tenant/activity').query({ cursor: badUuid });
+    expect(invalid.status).toBe(400);
+    expect(JSON.stringify(invalid.body)).not.toMatch(/SQLSTATE|22P02|invalid input syntax/i);
+  });
+
+  it('emits meeting.deleted inside the delete transaction', async () => {
+    const meetingId = '10000000-0000-0000-0000-00000000a001';
+    await getOwnerPool().query(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'Audit delete', 'meet', 'https://meet.google.com/aud-itde-lete', 'completed')`,
+      [meetingId, ACME, ACME_OWNER]
+    );
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const deleted = await admin.delete(`/api/v1/meetings/${meetingId}`);
+    expect(deleted.status).toBe(204);
+    const activity = await admin.get('/api/v1/tenant/activity').query({ action: 'meeting.deleted', limit: 10 });
+    expect(activity.body.items.some((item: { target_id: string }) => item.target_id === meetingId)).toBe(true);
+  });
+
+  it('treats concurrent revoke and deactivate as one state change and one audit row (200, no extra row on repeat)', async () => {
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const invited = await admin.post('/api/v1/tenant/seats/invite').send({
+      email: 'audit.concurrent@example.com',
+      role: 'member',
+    });
+    expect(invited.status).toBe(201);
+    const inviteId = invited.body.invites.find((i: { email: string }) => i.email === 'audit.concurrent@example.com')
+      ?.id as string;
+
+    const [firstRevoke, secondRevoke] = await Promise.all([
+      admin.post(`/api/v1/tenant/seats/invites/${inviteId}/revoke`),
+      admin.post(`/api/v1/tenant/seats/invites/${inviteId}/revoke`),
+    ]);
+    expect(firstRevoke.status).toBe(200);
+    expect(secondRevoke.status).toBe(200);
+    const thirdRevoke = await admin.post(`/api/v1/tenant/seats/invites/${inviteId}/revoke`);
+    expect(thirdRevoke.status).toBe(200);
+
+    const revoked = await admin.get('/api/v1/tenant/activity').query({ action: 'invite.revoked', limit: 100 });
+    const revokeRows = revoked.body.items.filter(
+      (item: { target_id: string }) => item.target_id === inviteId
+    );
+    expect(revokeRows).toHaveLength(1);
+
+    await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/reactivate`);
+    const beforeDeact = await admin.get('/api/v1/tenant/activity').query({
+      action: 'member.deactivated',
+      limit: 100,
+    });
+    const beforeCount = (beforeDeact.body.items as { target_id: string }[]).filter(
+      (item) => item.target_id === MEMBERSHIP_MEMBER
+    ).length;
+
+    const [firstDeact, secondDeact] = await Promise.all([
+      admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`),
+      admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`),
+    ]);
+    expect(firstDeact.status).toBe(200);
+    expect(secondDeact.status).toBe(200);
+    const repeatDeact = await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`);
+    expect(repeatDeact.status).toBe(200);
+
+    const deactivated = await admin.get('/api/v1/tenant/activity').query({
+      action: 'member.deactivated',
+      limit: 100,
+    });
+    const deactRows = (deactivated.body.items as { target_id: string }[]).filter(
+      (item) => item.target_id === MEMBERSHIP_MEMBER
+    );
+    expect(deactRows).toHaveLength(beforeCount + 1);
+  });
+
+  it('writes failed-invite on email mismatch and keeps accept+audit in one transaction', async () => {
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const invited = await admin.post('/api/v1/tenant/seats/invite').send({
+      email: 'audit.mismatch@example.com',
+      role: 'member',
+    });
+    expect(invited.status).toBe(201);
+    const token = tokenFrom(inbox.at(-1));
+    const mismatch = await loginWithInvite('other.person@example.com', 'Other Person', token);
+    expect(mismatch.status).toBe(302);
+
+    const failed = await admin.get('/api/v1/tenant/activity').query({ action: 'failed-invite', limit: 20 });
+    expect(failed.body.items.length).toBeGreaterThanOrEqual(1);
+
+    const client = await getAppPool().connect();
+    let atomicInviteId = '';
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [ACME]);
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO invites (tenant_id, email, role, token_hash, expires_at)
+         VALUES ($1, 'audit.atomic@example.com', 'member', 'atomic-hash', now() + interval '1 day')
+         RETURNING id`,
+        [ACME]
+      );
+      atomicInviteId = inserted.rows[0].id;
+      await recordAudit(client, {
+        actorUserId: ACME_OWNER,
+        action: 'invite.accepted',
+        targetType: 'invite',
+        targetId: atomicInviteId,
+        email: 'audit.atomic@example.com',
+      });
+      const inTxn = await client.query(`SELECT 1 FROM audit_events WHERE target_id = $1`, [atomicInviteId]);
+      expect(inTxn.rowCount).toBe(1);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+    await withTenant(ACME, async (tx) => {
+      const gone = await tx.query(`SELECT 1 FROM invites WHERE id = $1`, [atomicInviteId]);
+      expect(gone.rowCount).toBe(0);
+      const auditGone = await tx.query(`SELECT 1 FROM audit_events WHERE target_id = $1`, [atomicInviteId]);
+      expect(auditGone.rowCount).toBe(0);
+    });
+  });
+
+  it('overwrites client created_at, rejects unknown actions, and requires actor membership', async () => {
+    await withTenant(ACME, async (client) => {
+      const stamped = await client.query<{ created_at: Date }>(
+        `INSERT INTO audit_events (tenant_id, actor_user_id, action, created_at)
+         VALUES ($1, $2, 'login', '2020-01-01T00:00:00Z')
+         RETURNING created_at`,
+        [ACME, ACME_OWNER]
+      );
+      expect(Math.abs(Date.now() - new Date(stamped.rows[0].created_at).getTime())).toBeLessThan(60_000);
+
+      await expect(
+        client.query(`INSERT INTO audit_events (tenant_id, action) VALUES ($1, 'not-an-action')`, [ACME])
+      ).rejects.toThrow();
+
+      await expect(
+        client.query(
+          `INSERT INTO audit_events (tenant_id, actor_user_id, action) VALUES ($1, $2, 'login')`,
+          [ACME, LUMEN_OWNER]
+        )
+      ).rejects.toThrow(/not a member/i);
+
+      await recordAudit(client, { action: 'failed-login', actorUserId: LUMEN_OWNER, targetType: 'user' });
+      await recordAudit(client, { action: 'failed-invite', targetType: 'invite' });
+    });
+  });
+
+  it('lets owner purge for offboarding and user erasure; direct mutation without the flag still fails', async () => {
+    const owner = getOwnerPool();
+    const tenant = await owner.query<{ id: string }>(
+      `INSERT INTO tenants (name, slug) VALUES ('Erase Co', 'erase-co') RETURNING id`
+    );
+    const tenantId = tenant.rows[0].id;
+    await owner.query(`INSERT INTO audit_events (tenant_id, action) VALUES ($1, 'login')`, [tenantId]);
+    await owner.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+    const orphan = await owner.query(`SELECT 1 FROM audit_events WHERE tenant_id = $1`, [tenantId]);
+    expect(orphan.rowCount).toBe(1);
+    expect(await purgeAuditTenant(tenantId)).toBe(1);
+    const purged = await owner.query(`SELECT 1 FROM audit_events WHERE tenant_id = $1`, [tenantId]);
+    expect(purged.rowCount).toBe(0);
+
+    const user = await owner.query<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('erase.user@example.com', 'Erase User') RETURNING id`
+    );
+    const userId = user.rows[0].id;
+    await withTenant(ACME, async (client) => {
+      await recordAudit(client, {
+        actorUserId: userId,
+        action: 'failed-login',
+        targetType: 'user',
+        targetId: userId,
+      });
+    });
+    await owner.query(`DELETE FROM users WHERE id = $1`, [userId]);
+    const dangling = await owner.query(`SELECT actor_user_id FROM audit_events WHERE target_id = $1`, [userId]);
+    expect(dangling.rows[0].actor_user_id).toBe(userId);
+    await purgeAuditUser(userId);
+    const after = await owner.query(`SELECT 1 FROM audit_events WHERE target_id = $1`, [userId]);
+    expect(after.rowCount).toBe(0);
+
+    await withTenant(ACME, async (client) => {
+      await expect(client.query(`UPDATE audit_events SET action = 'logout'`)).rejects.toThrow(/append-only/i);
+      await expect(client.query(`DELETE FROM audit_events`)).rejects.toThrow(/append-only/i);
+    });
+    await expect(owner.query(`UPDATE audit_events SET action = 'logout'`)).rejects.toThrow(/append-only/i);
+    await expect(getAppPool().query(`SELECT purge_audit_tenant($1)`, [ACME])).rejects.toThrow();
   });
 });

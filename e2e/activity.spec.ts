@@ -17,5 +17,5 @@ test('admin opens Activity after an invite and sees the event', async ({ page })
   await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
   await expect(page.getByRole('table', { name: 'Workspace activity' })).toBeVisible();
   await expect(page.getByText('Invite sent')).toBeVisible();
-  await expect(page.getByText('activity.invitee@example.com')).toBeVisible();
+  await expect(page.getByText('a***@example.com')).toBeVisible();
 });

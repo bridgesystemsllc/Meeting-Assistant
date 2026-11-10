@@ -22,8 +22,9 @@ function actorLabel(item: ActivityItem): string {
 }
 
 function targetLabel(item: ActivityItem): string {
-  const email = item.metadata && typeof item.metadata.email === 'string' ? item.metadata.email : null;
-  if (email) return email;
+  const masked =
+    item.metadata && typeof item.metadata.email_masked === 'string' ? item.metadata.email_masked : null;
+  if (masked) return masked;
   if (item.target_type) return item.target_type;
   return '—';
 }

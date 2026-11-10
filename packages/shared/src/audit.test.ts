@@ -5,14 +5,17 @@ import {
   AuditActionSchema,
   AUDIT_ACTIONS,
   AUDIT_ACTION_LABELS,
+  maskEmail,
   sanitizeAuditMetadata,
 } from './audit.js';
 
 describe('AuditActionSchema', () => {
-  it('covers auth, invite, membership, and reserved later-phase actions', () => {
+  it('covers auth, invite, membership, meeting.deleted, and reserved later-phase actions', () => {
     expect(AUDIT_ACTIONS).toEqual([
       'login',
       'logout',
+      'failed-login',
+      'failed-invite',
       'invite.sent',
       'invite.resent',
       'invite.revoked',
@@ -22,6 +25,7 @@ describe('AuditActionSchema', () => {
       'member.role_changed',
       'branding.updated',
       'meeting.bot_dispatched',
+      'meeting.deleted',
     ]);
     for (const action of AUDIT_ACTIONS) {
       expect(AuditActionSchema.parse(action)).toBe(action);
@@ -31,7 +35,7 @@ describe('AuditActionSchema', () => {
 });
 
 describe('sanitizeAuditMetadata', () => {
-  it('keeps email and strips tokens, secrets, and hashes', () => {
+  it('strips tokens, secrets, hashes, and raw email', () => {
     expect(
       sanitizeAuditMetadata({
         email: 'jordan@example.com',
@@ -43,10 +47,16 @@ describe('sanitizeAuditMetadata', () => {
         nested: { access_token: 'nope', email: 'ok@example.com' },
       })
     ).toEqual({
-      email: 'jordan@example.com',
       role: 'member',
-      nested: { email: 'ok@example.com' },
+      nested: {},
     });
+  });
+});
+
+describe('maskEmail', () => {
+  it('masks as a***@domain', () => {
+    expect(maskEmail('jordan@example.com')).toBe('j***@example.com');
+    expect(maskEmail('Avery.Owner@Example.COM')).toBe('a***@example.com');
   });
 });
 
