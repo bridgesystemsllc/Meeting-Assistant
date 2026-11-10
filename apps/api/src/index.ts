@@ -6,6 +6,11 @@
 import 'dotenv/config';
 import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
+import { requireWebhookSecret } from './services/webhook-verify.js';
+
+if (process.env.NODE_ENV === 'production') {
+  requireWebhookSecret();
+}
 
 const app = createApp();
 const PORT = process.env.PORT || 3001;
