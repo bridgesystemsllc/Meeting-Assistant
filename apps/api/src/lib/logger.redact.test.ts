@@ -32,6 +32,7 @@ describe('logger redaction', () => {
       access_token: 'access-secret',
       clientSecret: 'oauth-secret',
       password: 'hunter2',
+      acceptUrl: 'http://localhost:5173/invite/raw-invite-token?tenant=acme-notes',
     }, 'auth debug');
 
     await new Promise((r) => setImmediate(r));
@@ -44,5 +45,7 @@ describe('logger redaction', () => {
     expect(out).not.toContain('oauth-secret');
     expect(out).not.toContain('hunter2');
     expect(out).not.toContain('eyJhbGciOiJub25lIn0');
+    expect(out).not.toContain('raw-invite-token');
+    expect(out).not.toContain('acceptUrl');
   });
 });
