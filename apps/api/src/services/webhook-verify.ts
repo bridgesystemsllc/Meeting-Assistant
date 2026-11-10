@@ -169,6 +169,13 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 /**
+ * For testing: reset the cached secret
+ */
+export function resetWebhookSecretCache(): void {
+  _webhookSecret = null;
+}
+
+/**
  * Creates a webhook signature for testing purposes
  * 
  * @param rawBody - The raw request body
