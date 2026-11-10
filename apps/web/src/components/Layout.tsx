@@ -1,8 +1,9 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { Calendar, LayoutDashboard } from 'lucide-react';
+import '../styles/font-tokens.css';
 
 const navItems = [
-  { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/meetings', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/meetings', label: 'Meetings', icon: Calendar },
 ];
 
@@ -10,7 +11,7 @@ export function Layout() {
   const location = useLocation();
 
   return (
-    <div className="min-h-screen bg-gray-950">
+    <div className="min-h-screen bg-gray-950" style={{ fontFamily: 'var(--font-app)' }}>
       {/* Sidebar */}
       <aside className="fixed left-0 top-0 h-full w-64 bg-gray-900 border-r border-gray-800 p-4">
         <div className="mb-8">
@@ -26,7 +27,7 @@ export function Layout() {
 
             return (
               <Link
-                key={item.path}
+                key={item.label}
                 to={item.path}
                 className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                   isActive
