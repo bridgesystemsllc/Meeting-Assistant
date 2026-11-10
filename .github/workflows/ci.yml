@@ -90,6 +90,8 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+        env:
+          RECALL_WEBHOOK_SECRET: whsec_test_secret_for_ci
 
   build:
     runs-on: ubuntu-latest

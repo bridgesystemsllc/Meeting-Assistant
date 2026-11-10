@@ -34,6 +34,11 @@ describeIfDb('webhook burst tests', () => {
     process.env.DATABASE_APP_URL = DATABASE_URL;
     process.env.RECALL_WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.NODE_ENV = 'test';
+    process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+    
+    // Reset database pools to use new env vars
+    const { resetPools } = await import('../lib/db.js');
+    await resetPools();
     
     // Import and create the app
     const { createApp } = await import('../app.js');

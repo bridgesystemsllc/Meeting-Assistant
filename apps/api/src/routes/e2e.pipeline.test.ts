@@ -4,7 +4,7 @@
  * Tests the complete flow: create meeting → webhook → process → complete
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import pg from 'pg';
@@ -30,6 +30,11 @@ describeIfDb('e2e pipeline tests', () => {
     process.env.DATABASE_APP_URL = DATABASE_URL;
     process.env.RECALL_WEBHOOK_SECRET = WEBHOOK_SECRET;
     process.env.NODE_ENV = 'test';
+    process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+    
+    // Reset database pools to use new env vars
+    const { resetPools } = await import('../lib/db.js');
+    await resetPools();
     
     const { createApp } = await import('../app.js');
     app = createApp();
@@ -253,8 +258,8 @@ describeIfDb('e2e pipeline tests', () => {
       const { queueMeetingProcessing } = await import('../lib/queue.js');
       
       // Mock the queue to capture the jobId
-      const meetingId = crypto.randomUUID();
-      const botId = 'bot-jobid-test';
+      const _meetingId = crypto.randomUUID();
+      const _botId = 'bot-jobid-test';
       
       // The jobId should be meeting:${meetingId}
       // This is enforced by the queueMeetingProcessing function
