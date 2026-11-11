@@ -545,7 +545,7 @@ describe('seats integration', () => {
         [tenantId]
       );
       await ownerDb.query(
-        `INSERT INTO tenant_settings (tenant_id, retention_days) VALUES ($1, 365)
+        `INSERT INTO tenant_settings (tenant_id, transcript_retention_days) VALUES ($1, 365)
          ON CONFLICT (tenant_id) DO NOTHING`,
         [tenantId]
       );
@@ -610,7 +610,7 @@ describe('seats integration', () => {
         [tenantId]
       );
       await ownerDb.query(
-        `INSERT INTO tenant_settings (tenant_id, retention_days) VALUES ($1, 365)
+        `INSERT INTO tenant_settings (tenant_id, transcript_retention_days) VALUES ($1, 365)
          ON CONFLICT (tenant_id) DO NOTHING`,
         [tenantId]
       );

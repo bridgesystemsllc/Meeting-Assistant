@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS processing_dlq (
 
 -- Enable RLS on processing_dlq
 ALTER TABLE processing_dlq ENABLE ROW LEVEL SECURITY;
+ALTER TABLE processing_dlq FORCE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS processing_dlq_tenant_policy ON processing_dlq;
 DROP POLICY IF EXISTS tenant_isolation ON processing_dlq;

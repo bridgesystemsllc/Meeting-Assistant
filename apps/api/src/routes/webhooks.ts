@@ -66,7 +66,7 @@ webhooksRouter.post('/recall', async (req, res) => {
   const raw = rawBody(req);
   const verified = webhookVerify.createWebhookVerifier()(raw, webhookHeaders(req));
   if (!verified.valid) {
-    sendError(res, 400, 'BAD_SIGNATURE', 'Invalid webhook signature');
+    sendError(res, 400, 'BAD_SIGNATURE', verified.error || 'Invalid webhook signature');
     return;
   }
 
@@ -78,33 +78,41 @@ webhooksRouter.post('/recall', async (req, res) => {
     headerValue(req, 'webhook-id') ||
     `${correlation.recallBotId ?? 'unknown'}-${correlation.event ?? 'event'}`;
 
-  if (correlation.recallBotId || correlation.claimedMeetingId) {
-    const resolved = await resolveMeetingTenant({
-      recallBotId: correlation.recallBotId,
-      claimedTenantId: correlation.claimedTenantId,
-      claimedMeetingId: correlation.claimedMeetingId,
-    });
-
-    if (resolved.ok) {
-      if (correlation.recallBotId && correlation.event) {
-        await webhookInsertEvent(
-          correlation.recallBotId,
-          correlation.event,
-          eventId,
-          payload ?? {}
-        );
-      }
-
-      await withTenant(resolved.tenant_id, async (client) => {
-        await client.query('SELECT id FROM meetings WHERE id = $1 AND tenant_id = $2', [
-          resolved.meeting_id,
-          resolved.tenant_id,
-        ]);
+  let duplicate = false;
+  try {
+    if (correlation.recallBotId || correlation.claimedMeetingId) {
+      const resolved = await resolveMeetingTenant({
+        recallBotId: correlation.recallBotId,
+        claimedTenantId: correlation.claimedTenantId,
+        claimedMeetingId: correlation.claimedMeetingId,
       });
-    } else {
-      logger.warn({ event: correlation.event }, 'Webhook meeting not resolved');
+
+      if (resolved.ok) {
+        if (correlation.recallBotId && correlation.event) {
+          const inserted = await webhookInsertEvent(
+            correlation.recallBotId,
+            correlation.event,
+            eventId,
+            payload ?? {}
+          );
+          duplicate = !inserted;
+        }
+
+        if (!duplicate) {
+          await withTenant(resolved.tenant_id, async (client) => {
+            await client.query('SELECT id FROM meetings WHERE id = $1 AND tenant_id = $2', [
+              resolved.meeting_id,
+              resolved.tenant_id,
+            ]);
+          });
+        }
+      } else {
+        logger.warn({ event: correlation.event }, 'Webhook meeting not resolved');
+      }
     }
+  } catch (err) {
+    logger.error({ err, event: correlation.event }, 'Error processing webhook after verified signature');
   }
 
-  res.status(200).json({ received: true });
+  res.status(200).json({ received: true, duplicate });
 });

@@ -1,37 +1,52 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  createSignature,
   createWebhookVerifier,
   requireWebhookSecret,
+  resetWebhookSecretCache,
   verifyWebhookSignature,
 } from './webhook-verify.js';
 
-describe('webhook-verify (fail-closed stub)', () => {
+describe('webhook-verify (HMAC)', () => {
   afterEach(() => {
     delete process.env.RECALL_WEBHOOK_SECRET;
+    resetWebhookSecretCache();
   });
 
-  it('rejects every payload, even when a secret is set', () => {
+  it('accepts a payload signed with createSignature', () => {
+    const raw = '{"event":"bot.done"}';
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const id = 'evt-1';
+    const secret = 'whsec_dGVzdHNlY3JldA==';
+    const signature = createSignature(raw, timestamp, id, secret);
+    const result = verifyWebhookSignature(
+      raw,
+      {
+        'svix-id': id,
+        'svix-timestamp': timestamp,
+        'svix-signature': `v1,${signature}`,
+      },
+      secret,
+    );
+    expect(result.valid).toBe(true);
+    expect(result.id).toBe(id);
+  });
+
+  it('rejects a payload with no timestamp', () => {
     const result = verifyWebhookSignature('{"event":"bot.done"}', { 'svix-id': 'evt-1' }, 'whsec_test');
     expect(result.valid).toBe(false);
-    expect(result.error).toBe('verifier_not_configured');
+    expect(result.error).toMatch(/timestamp/i);
   });
 
-  it('bound verifier rejects when the secret is missing', () => {
+  it('bound verifier rejects when headers are missing', () => {
     delete process.env.RECALL_WEBHOOK_SECRET;
     const verify = createWebhookVerifier();
     expect(verify('{}', {}).valid).toBe(false);
-    expect(verify('{}', {}).error).toBe('verifier_not_configured');
   });
 
-  it('bound verifier still rejects after binding a secret (until FORGE drops in)', () => {
-    process.env.RECALL_WEBHOOK_SECRET = 'whsec_test';
-    const verify = createWebhookVerifier();
-    expect(verify('{"ok":true}', { 'svix-signature': 'v1,abc' }).valid).toBe(false);
-  });
-
-  it('requireWebhookSecret throws when unset', () => {
+  it('requireWebhookSecret returns empty string when unset in test', () => {
     delete process.env.RECALL_WEBHOOK_SECRET;
-    expect(() => requireWebhookSecret()).toThrow(/RECALL_WEBHOOK_SECRET/);
+    expect(requireWebhookSecret()).toBe('');
   });
 
   it('requireWebhookSecret returns the env value', () => {
