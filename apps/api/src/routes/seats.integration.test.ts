@@ -369,6 +369,13 @@ describe('seats integration', () => {
       );
       expect(mem.rows[0]?.seat_status).toBe('deactivated');
       expect(mem.rows[0]?.role).toBe('owner');
+      const invite = await check.query<{ revoked_at: Date | null; accepted_at: Date | null }>(
+        `SELECT revoked_at, accepted_at FROM invites
+          WHERE tenant_id = $1 AND email = $2 AND token_hash = $3`,
+        [ACME, 'deactivated.owner@example.com', hashToken(token)]
+      );
+      expect(invite.rows[0]?.accepted_at).toBeNull();
+      expect(invite.rows[0]?.revoked_at).not.toBeNull();
       await check.query(
         `DELETE FROM invites WHERE tenant_id = $1 AND email = $2`,
         [ACME, 'deactivated.owner@example.com']
@@ -404,12 +411,15 @@ describe('seats integration', () => {
     const token = randomToken(32);
     const ownerDb = new pg.Client({ connectionString: stack.ownerUrl });
     await ownerDb.connect();
+    let inviteId = '';
     try {
-      await ownerDb.query(
+      const inserted = await ownerDb.query<{ id: string }>(
         `INSERT INTO invites (tenant_id, email, role, token_hash, expires_at)
-         VALUES ($1, 'member@example.com', 'admin', $2, NOW() + INTERVAL '1 day')`,
+         VALUES ($1, 'member@example.com', 'admin', $2, NOW() + INTERVAL '1 day')
+         RETURNING id`,
         [ACME, hashToken(token)]
       );
+      inviteId = inserted.rows[0].id;
     } finally {
       await ownerDb.end();
     }
@@ -426,6 +436,16 @@ describe('seats integration', () => {
       );
       expect(mem.rows[0]?.seat_status).toBe('deactivated');
       expect(mem.rows[0]?.role).toBe('member');
+      const invite = await check.query<{ revoked_at: Date | null; accepted_at: Date | null }>(
+        `SELECT revoked_at, accepted_at FROM invites WHERE id = $1`,
+        [inviteId]
+      );
+      expect(invite.rows[0]?.accepted_at).toBeNull();
+      expect(invite.rows[0]?.revoked_at).not.toBeNull();
+      const seats = await admin.get('/api/v1/tenant/seats');
+      expect(seats.body.invites.some((i: { email: string }) => i.email === 'member@example.com')).toBe(
+        false
+      );
       await check.query(
         `DELETE FROM invites WHERE tenant_id = $1 AND email = 'member@example.com' AND accepted_at IS NULL`,
         [ACME]
