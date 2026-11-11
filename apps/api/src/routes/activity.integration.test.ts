@@ -387,6 +387,52 @@ describe('activity integration', () => {
     expect(codes).toEqual(expect.arrayContaining(['INVITE_USED', 'INVITE_REVOKED', 'INVITE_EXPIRED']));
   });
 
+  it('records failed-invite once per invite and code on lookup', async () => {
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const invited = await admin.post('/api/v1/tenant/seats/invite').send({
+      email: 'lookup.once@example.com',
+      role: 'member',
+    });
+    expect(invited.status).toBe(201);
+    const inviteId = invited.body.invites.find(
+      (i: { email: string }) => i.email === 'lookup.once@example.com'
+    )?.id as string;
+    const token = tokenFrom(inbox.at(-1));
+
+    await getOwnerPool().query(`UPDATE invites SET expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, [
+      inviteId,
+    ]);
+    const firstExpired = await request(origin()).get(`/api/v1/auth/invites/${token}`);
+    expect(firstExpired.status).toBe(400);
+    expect(firstExpired.body.error.code).toBe('INVITE_EXPIRED');
+    const secondExpired = await request(origin()).get(`/api/v1/auth/invites/${token}`);
+    expect(secondExpired.status).toBe(400);
+    expect(secondExpired.body.error.code).toBe('INVITE_EXPIRED');
+
+    const afterExpired = await admin.get('/api/v1/tenant/activity').query({ action: 'failed-invite', limit: 100 });
+    const expiredRows = (afterExpired.body.items as { target_id: string; metadata?: { code?: string } }[]).filter(
+      (item) => item.target_id === inviteId && item.metadata?.code === 'INVITE_EXPIRED'
+    );
+    expect(expiredRows).toHaveLength(1);
+
+    await getOwnerPool().query(`UPDATE invites SET revoked_at = NOW() WHERE id = $1`, [inviteId]);
+    const firstRevoked = await request(origin()).get(`/api/v1/auth/invites/${token}`);
+    expect(firstRevoked.status).toBe(400);
+    expect(firstRevoked.body.error.code).toBe('INVITE_REVOKED');
+    const secondRevoked = await request(origin()).get(`/api/v1/auth/invites/${token}`);
+    expect(secondRevoked.status).toBe(400);
+    expect(secondRevoked.body.error.code).toBe('INVITE_REVOKED');
+
+    const afterRevoked = await admin.get('/api/v1/tenant/activity').query({ action: 'failed-invite', limit: 100 });
+    const items = afterRevoked.body.items as { target_id: string; metadata?: { code?: string } }[];
+    expect(items.filter((item) => item.target_id === inviteId && item.metadata?.code === 'INVITE_EXPIRED')).toHaveLength(
+      1
+    );
+    expect(items.filter((item) => item.target_id === inviteId && item.metadata?.code === 'INVITE_REVOKED')).toHaveLength(
+      1
+    );
+  });
+
   it('does not leave an orphan session when login audit fails', async () => {
     const owner = getOwnerPool();
     const before = await owner.query<{ id: string }>(

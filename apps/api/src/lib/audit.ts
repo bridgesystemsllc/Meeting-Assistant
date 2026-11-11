@@ -104,31 +104,60 @@ async function writeAudit(tx: pg.PoolClient, event: AuditEventInput): Promise<Re
   const emailMasked = email ? maskEmail(email) : null;
   const targetId = event.targetId ?? (event.target && UUID_RE.test(event.target) ? event.target : null);
   const targetType = event.targetType ?? (targetId ? targetTypeFor(action) : null);
+  const failedCode =
+    action === 'failed-invite' && targetId && typeof metadata.code === 'string' && metadata.code.length > 0
+      ? metadata.code
+      : null;
 
-  const result = await tx.query<RecordedAuditEvent>(
-    `INSERT INTO audit_events (
-       tenant_id, actor_user_id, action, target_type, target_id,
-       metadata, email_hmac, email_masked
-     ) VALUES (
-       NULLIF(current_setting('app.tenant_id', true), '')::uuid,
-       $1, $2, $3, $4, $5::jsonb, $6, $7
-     )
-     RETURNING id, created_at`,
-    [
-      event.actorUserId ?? null,
-      action,
-      targetType,
-      targetId,
-      JSON.stringify(metadata),
-      emailHmac,
-      emailMasked,
-    ]
-  );
-  const row = result.rows[0];
-  if (!row) {
-    throw new Error('audit_events insert returned no row');
+  const insertSql = failedCode
+    ? `INSERT INTO audit_events (
+         tenant_id, actor_user_id, action, target_type, target_id,
+         metadata, email_hmac, email_masked
+       ) VALUES (
+         NULLIF(current_setting('app.tenant_id', true), '')::uuid,
+         $1, $2, $3, $4, $5::jsonb, $6, $7
+       )
+       ON CONFLICT (tenant_id, target_id, (metadata->>'code'))
+         WHERE action = 'failed-invite' AND target_id IS NOT NULL
+       DO NOTHING
+       RETURNING id, created_at`
+    : `INSERT INTO audit_events (
+         tenant_id, actor_user_id, action, target_type, target_id,
+         metadata, email_hmac, email_masked
+       ) VALUES (
+         NULLIF(current_setting('app.tenant_id', true), '')::uuid,
+         $1, $2, $3, $4, $5::jsonb, $6, $7
+       )
+       RETURNING id, created_at`;
+
+  const result = await tx.query<RecordedAuditEvent>(insertSql, [
+    event.actorUserId ?? null,
+    action,
+    targetType,
+    targetId,
+    JSON.stringify(metadata),
+    emailHmac,
+    emailMasked,
+  ]);
+  if (result.rows[0]) {
+    return result.rows[0];
   }
-  return row;
+  if (failedCode && targetId) {
+    const existing = await tx.query<RecordedAuditEvent>(
+      `SELECT id, created_at
+         FROM audit_events
+        WHERE action = 'failed-invite'
+          AND target_id = $1
+          AND metadata->>'code' = $2
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1`,
+      [targetId, failedCode]
+    );
+    if (existing.rows[0]) {
+      return existing.rows[0];
+    }
+  }
+  throw new Error('audit_events insert returned no row');
 }
 
 export async function recordAudit(event: AuditEvent): Promise<void>;
