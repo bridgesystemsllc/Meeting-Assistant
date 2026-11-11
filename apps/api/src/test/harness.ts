@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { OAuth2Server } from 'oauth2-mock-server';
 
 export const APP_PASSWORD = 'app-test-secret';

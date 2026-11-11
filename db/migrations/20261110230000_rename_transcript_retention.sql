@@ -38,9 +38,11 @@ CREATE TABLE IF NOT EXISTS processing_dlq (
 -- Enable RLS on processing_dlq
 ALTER TABLE processing_dlq ENABLE ROW LEVEL SECURITY;
 
--- RLS policy for processing_dlq (tenant-scoped)
-CREATE POLICY processing_dlq_tenant_policy ON processing_dlq
-  USING (tenant_id = current_setting('app.tenant_id', TRUE)::uuid);
+DROP POLICY IF EXISTS processing_dlq_tenant_policy ON processing_dlq;
+DROP POLICY IF EXISTS tenant_isolation ON processing_dlq;
+CREATE POLICY tenant_isolation ON processing_dlq TO meeting_assistant_app
+  USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
 -- Grant permissions
 GRANT SELECT, INSERT, UPDATE, DELETE ON processing_dlq TO meeting_assistant_app;

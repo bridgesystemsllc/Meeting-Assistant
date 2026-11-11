@@ -40,6 +40,7 @@ export function createApp(): express.Express {
   });
 
   app.use('/health', healthRouter);
+  app.use('/webhooks', webhooksRouter);
   app.use('/api/v1/auth', authRouter);
   app.use(v1AuthGuard);
   app.use('/api/v1/me', meRouter);
