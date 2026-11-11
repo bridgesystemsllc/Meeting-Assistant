@@ -20,7 +20,7 @@ export default function SignupPage() {
       <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
         <div>
           <label htmlFor="name" className="block text-sm font-medium text-text-secondary mb-1.5">Full name</label>
-          <input id="name" type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ahmad" className="w-full bg-elevated border border-border-subtle rounded-md px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-violet" />
+          <input id="name" type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Smith" className="w-full bg-elevated border border-border-subtle rounded-md px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-violet" />
         </div>
         <div>
           <label htmlFor="signup-email" className="block text-sm font-medium text-text-secondary mb-1.5">Work email</label>

@@ -379,7 +379,7 @@ export const MOCK_MEETINGS: Meeting[] = [
       { decision: "Allocate $50K for LATAM pilot campaign", owner: "Finance" },
     ],
     speakers: [
-      { id: "A", name: "Ahmad", talk_time_pct: 38 },
+      { id: "A", name: "Alex", talk_time_pct: 38 },
       { id: "B", name: "Sarah", talk_time_pct: 29 },
       { id: "C", name: "Marcus", talk_time_pct: 22 },
       { id: "D", name: "Dev", talk_time_pct: 11 },
@@ -414,7 +414,7 @@ export const MOCK_MEETINGS: Meeting[] = [
     speakers: [
       { id: "A", name: "Jared", talk_time_pct: 45 },
       { id: "B", name: "Chase", talk_time_pct: 35 },
-      { id: "C", name: "Ahmad", talk_time_pct: 20 },
+      { id: "C", name: "Alex", talk_time_pct: 20 },
     ],
     risks: [{ risk: "Sprint velocity declining for 3rd consecutive sprint", severity: "high" }],
     topics: [
@@ -426,7 +426,7 @@ export const MOCK_MEETINGS: Meeting[] = [
   },
   {
     id: "3",
-    title: "KarEve Onboarding Call",
+    title: "Lumen & Vale Onboarding Call",
     platform: "zoom",
     started_at: "2026-03-02T09:00:00Z",
     duration_seconds: 5400,
@@ -1422,7 +1422,7 @@ export default function SignupPage() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Ahmad"
+            placeholder="Jane Smith"
             className="w-full bg-elevated border border-border-subtle rounded-md px-4 py-3 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-violet"
           />
         </div>
@@ -2683,7 +2683,7 @@ git commit -m "feat: add analytics page with stats, speaker breakdown, sentiment
 import { useState } from "react";
 
 export default function SettingsPage() {
-  const [name, setName] = useState("Ahmad");
+  const [name, setName] = useState("Jane Smith");
   const [email, setEmail] = useState("ahmad@bridgesystems.co");
   const [emailNotifs, setEmailNotifs] = useState(true);
   const [slackNotifs, setSlackNotifs] = useState(false);
