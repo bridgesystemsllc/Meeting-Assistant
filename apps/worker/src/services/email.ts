@@ -17,7 +17,8 @@ interface RecapEmailData {
   meeting: MeetingInfo;
   analysis: MeetingAnalysis;
   ownerEmail: string;
-  ownerName: string;
+  ownerName?: string;
+  ownerId?: string; // P3-2: Log user id, not email
   language?: string | null;
 }
 
@@ -109,7 +110,8 @@ export async function sendRecapEmail(data: RecapEmailData): Promise<boolean> {
       text,
     });
 
-    logger.info({ meetingId: meeting.id, ownerEmail }, 'Recap email sent');
+    // P3-2: Log user id, not email
+    logger.info({ meetingId: meeting.id, ownerId: data.ownerId }, 'Recap email sent');
     return true;
   } catch (err) {
     logger.error({ meetingId: meeting.id, err }, 'Failed to send recap email');

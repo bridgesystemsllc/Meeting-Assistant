@@ -130,21 +130,49 @@ export function verifyWebhookSignature(
 }
 
 /**
- * Checks if the webhook secret is configured
- * In production, this MUST be set - boot should fail otherwise
+ * P1-3: Fail closed on missing RECALL_WEBHOOK_SECRET at startup
+ * The secret MUST be set in all environments except test.
+ * This is checked at module load time to fail fast.
  */
-export function requireWebhookSecret(): string {
+let _webhookSecret: string | null = null;
+
+function initWebhookSecret(): string {
   const secret = process.env.RECALL_WEBHOOK_SECRET;
   
   if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('RECALL_WEBHOOK_SECRET must be set in production');
+    // Only allow missing secret in test environment
+    if (process.env.NODE_ENV === 'test') {
+      logger.warn('RECALL_WEBHOOK_SECRET not set in test environment');
+      return '';
     }
-    logger.warn('RECALL_WEBHOOK_SECRET not set - webhook verification disabled in development');
-    return '';
+    throw new Error('RECALL_WEBHOOK_SECRET is required - cannot start without webhook secret');
   }
 
   return secret;
+}
+
+/**
+ * Returns the webhook secret. Call this at request time.
+ * The secret is validated at startup, so this will always return a valid secret
+ * (or empty string in test mode).
+ */
+export function requireWebhookSecret(): string {
+  if (_webhookSecret === null) {
+    _webhookSecret = initWebhookSecret();
+  }
+  return _webhookSecret;
+}
+
+// Validate secret at module load time (not in test)
+if (process.env.NODE_ENV !== 'test') {
+  _webhookSecret = initWebhookSecret();
+}
+
+/**
+ * For testing: reset the cached secret
+ */
+export function resetWebhookSecretCache(): void {
+  _webhookSecret = null;
 }
 
 /**

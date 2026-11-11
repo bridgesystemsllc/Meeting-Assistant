@@ -7,15 +7,15 @@
 
 ```
 Meeting starts
-    → You trigger: POST /api/meetings/join with meeting URL
+    → You trigger: POST /api/v1/meetings with meeting URL
     → Recall.ai bot joins the meeting as a participant
     → Bot records audio throughout the meeting
     → Meeting ends → Recall.ai sends webhook to your backend
     → Your backend queues the recording for processing
-    → AssemblyAI transcribes with speaker diarization
+    → Recall.ai transcribes with speaker diarization (recallai_streaming)
     → Claude analyzes the transcript (summary, actions, decisions, risks)
     → Results stored in PostgreSQL
-    → Email sent to meeting host with full notes
+    → Email sent to meeting owner with full notes
     → Dashboard shows all meeting history
 ```
 
@@ -25,8 +25,7 @@ Meeting starts
 
 | Layer | Service | Purpose |
 |---|---|---|
-| Meeting Bot | [Recall.ai](https://recall.ai) | Joins Zoom/Meet/Teams, records |
-| Transcription | [AssemblyAI](https://assemblyai.com) | Transcribes + speaker identification |
+| Meeting Bot | [Recall.ai](https://recall.ai) | Joins Zoom/Meet/Teams, records + transcribes |
 | AI Analysis | [Claude API](https://anthropic.com) | Notes, actions, decisions, sentiment |
 | Queue | Redis + Bull | Background job processing |
 | Database | PostgreSQL | Store meetings, transcripts, analysis |
@@ -91,13 +90,6 @@ ngrok http 3001
 
 **Cost:** ~$0.50-$1.00 per meeting hour
 
-### AssemblyAI (Transcription)  
-1. Sign up at [assemblyai.com](https://www.assemblyai.com)
-2. Get API key from dashboard
-3. Free tier: 5 hours/month
-
-**Cost:** ~$0.65/hour for transcription with speaker diarization
-
 ### Anthropic / Claude (AI Analysis)
 1. Get API key from [console.anthropic.com](https://console.anthropic.com)
 2. Uses claude-opus-4 for analysis
@@ -143,26 +135,29 @@ DELETE /api/meetings/:id/bot
 
 ```
 meeting-assistant/
-├── src/
-│   ├── server.js              # Express app entry
-│   ├── routes/
-│   │   ├── meetings.js        # Meeting CRUD + bot deployment
-│   │   └── webhooks.js        # Recall.ai webhook handler
-│   ├── services/
-│   │   ├── recallService.js   # Recall.ai bot management
-│   │   ├── transcriptionService.js  # AssemblyAI integration
-│   │   ├── analysisService.js # Claude AI analysis
-│   │   └── emailService.js    # Email notifications
-│   ├── jobs/
-│   │   └── worker.js          # Background processing pipeline
-│   └── utils/
-│       ├── db.js              # PostgreSQL connection
-│       └── logger.js          # Winston logger
-├── config/
-│   └── schema.sql             # Database schema
-├── frontend/                  # React dashboard
+├── apps/
+│   ├── api/                   # Express API server
+│   │   └── src/
+│   │       ├── routes/
+│   │       │   ├── meetings.ts    # Meeting CRUD + bot dispatch
+│   │       │   └── webhooks.ts    # Recall.ai webhook handler
+│   │       └── services/
+│   │           ├── recall.ts      # Recall.ai bot management
+│   │           └── webhook-verify.ts # Svix signature verification
+│   ├── web/                   # React + Vite frontend
+│   └── worker/                # BullMQ background job processing
+│       └── src/
+│           ├── jobs/
+│           │   └── process-meeting.ts  # Full pipeline
+│           └── services/
+│               ├── analysis.ts    # Claude AI analysis
+│               └── email.ts       # Email notifications
+├── packages/
+│   └── shared/                # Shared types and schemas
+├── db/
+│   └── migrations/            # PostgreSQL migrations
 ├── .env.example               # Environment template
-└── package.json
+└── package.json               # Workspace root
 ```
 
 ---

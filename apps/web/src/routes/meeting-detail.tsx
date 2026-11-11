@@ -4,7 +4,7 @@ import { ArrowLeft, Loader2, AlertCircle, Clock } from 'lucide-react';
 import type { MeetingDetailResponse, ActionItem } from '../lib/api';
 import { ConsentStatus } from '../components/ConsentStatus';
 
-type LoadingState = 'idle' | 'loading' | 'success' | 'error';
+type LoadingState = 'idle' | 'loading' | 'success' | 'error' | 'not_found';
 
 const tabs = ['Summary', 'Action Items', 'Transcript', 'Analytics'] as const;
 type Tab = typeof tabs[number];
@@ -49,10 +49,11 @@ export function MeetingDetailPage() {
       if (!id) return;
       setLoadingState('loading');
       try {
-        const res = await fetch(`/api/meetings/${id}`);
+        const res = await fetch(`/api/v1/meetings/${id}`, { credentials: 'include' });
         if (!res.ok) {
           if (res.status === 404) {
-            throw new Error('Meeting not found');
+            setLoadingState('not_found');
+            return;
           }
           throw new Error('Failed to fetch meeting');
         }
@@ -72,6 +73,21 @@ export function MeetingDetailPage() {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
+      </div>
+    );
+  }
+
+  if (loadingState === 'not_found') {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <AlertCircle className="mb-4 h-12 w-12 text-[var(--color-muted)]" />
+        <h1 className="mb-2 text-xl font-semibold text-[var(--color-fg)]">Meeting not found</h1>
+        <p className="text-sm text-[var(--color-muted)]">
+          This meeting does not exist or is not in your workspace.
+        </p>
+        <Link to="/meetings" className="btn-primary mt-4 text-sm">
+          Back to meetings
+        </Link>
       </div>
     );
   }
@@ -109,7 +125,7 @@ export function MeetingDetailPage() {
 
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white mb-2">{meeting.title}</h1>
+            <h1 className="mb-2 text-2xl font-semibold text-[var(--color-fg)]">{meeting.title}</h1>
             <div className="flex items-center gap-4 text-sm text-gray-400 flex-wrap">
               {meeting.started_at && (
                 <span className="flex items-center gap-1">

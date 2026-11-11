@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'crypto';
-import { verifyWebhookSignature, requireWebhookSecret } from './webhook-verify.js';
+import { verifyWebhookSignature, requireWebhookSecret, resetWebhookSecretCache } from './webhook-verify.js';
 
 describe('verifyWebhookSignature', () => {
   const secret = 'whsec_' + Buffer.from('test-secret-key-32-bytes-long!!').toString('base64');
@@ -122,11 +122,13 @@ describe('requireWebhookSecret', () => {
 
   beforeEach(() => {
     vi.resetModules();
+    resetWebhookSecretCache(); // Reset the cached secret between tests
     process.env = { ...originalEnv };
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    resetWebhookSecretCache();
   });
 
   it('returns secret when set', () => {
@@ -135,15 +137,17 @@ describe('requireWebhookSecret', () => {
     expect(secret).toBe('whsec_test');
   });
 
-  it('throws in production when secret not set', () => {
+  it('throws in non-test environment when secret not set (P1-3)', () => {
+    // P1-3: Fail closed - require secret in all non-test environments
     process.env.NODE_ENV = 'production';
     delete process.env.RECALL_WEBHOOK_SECRET;
     
-    expect(() => requireWebhookSecret()).toThrow('RECALL_WEBHOOK_SECRET must be set in production');
+    expect(() => requireWebhookSecret()).toThrow('RECALL_WEBHOOK_SECRET is required');
   });
 
-  it('returns empty string in development when secret not set', () => {
-    process.env.NODE_ENV = 'development';
+  it('returns empty string in test environment when secret not set', () => {
+    // Only test environment allows missing secret
+    process.env.NODE_ENV = 'test';
     delete process.env.RECALL_WEBHOOK_SECRET;
     
     const secret = requireWebhookSecret();

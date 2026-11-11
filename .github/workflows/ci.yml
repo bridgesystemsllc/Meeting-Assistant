@@ -65,14 +65,33 @@ jobs:
       - run: npm ci
       - name: Run migrations
         run: |
-          psql -h localhost -U test -d test -f db/migrations/001_initial.sql
-          psql -h localhost -U test -d test -f db/migrations/002_consent.sql
+          for f in db/migrations/*.sql; do
+            echo "Applying $f"
+            psql -h localhost -U test -d test -f "$f"
+          done
         env:
           PGPASSWORD: test
       - run: npm run test -- --run
         env:
+          NODE_ENV: test
           DATABASE_URL: postgres://test:test@localhost:5432/test
+          DATABASE_APP_URL: postgres://test:test@localhost:5432/test
           REDIS_URL: redis://localhost:6379
+          RECALL_WEBHOOK_SECRET: whsec_test_secret_for_ci
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          RECALL_WEBHOOK_SECRET: whsec_test_secret_for_ci
 
   build:
     runs-on: ubuntu-latest
