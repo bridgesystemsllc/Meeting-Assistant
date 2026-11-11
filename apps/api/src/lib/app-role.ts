@@ -18,10 +18,12 @@ const TENANT_ISOLATION_SQL_LITERAL = TENANT_ISOLATION_EXPR.replaceAll("'", "''")
  * (session_user and current_user are meeting_assistant_app — not a member of
  * it, not a table owner, not SET ROLE onto a privileged role).
  *
- * That role must also be NOSUPERUSER NOBYPASSRLS, own no public relations or
- * SECURITY DEFINER functions, have no pg_auth_members rows, not be a member
- * of a table owner, not receive definer_access, and have only policies whose
- * USING and WITH CHECK equal the canonical tenant_isolation expression.
+ * That role must also be NOSUPERUSER NOBYPASSRLS NOREPLICATION, own no public
+ * relations or SECURITY DEFINER functions, have no pg_auth_members rows, not
+ * be a member of a table owner, not receive definer_access, and have only
+ * policies whose USING and WITH CHECK equal the canonical tenant_isolation
+ * expression. Public tables the app can DML must ENABLE RLS; those with
+ * tenant_id must have a canonical tenant_isolation policy for the app role.
  */
 export const APP_ROLE_GUARD_SQL = `
 SELECT
@@ -30,6 +32,7 @@ SELECT
   (session_user = '${REQUIRED_APP_ROLE}' AND current_user = '${REQUIRED_APP_ROLE}') AS is_app_role,
   r.rolsuper,
   r.rolbypassrls,
+  r.rolreplication,
   EXISTS (
     SELECT 1
     FROM pg_class c
@@ -88,7 +91,56 @@ SELECT
         pg_get_expr(p.polqual, p.polrelid) = '${TENANT_ISOLATION_SQL_LITERAL}'
         AND pg_get_expr(p.polwithcheck, p.polrelid) = '${TENANT_ISOLATION_SQL_LITERAL}'
       )
-  ) AS has_nontenant_policy
+  ) AS has_nontenant_policy,
+  EXISTS (
+    SELECT 1
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND NOT c.relrowsecurity
+      AND (
+        has_table_privilege(r.oid, c.oid, 'SELECT')
+        OR has_table_privilege(r.oid, c.oid, 'INSERT')
+        OR has_table_privilege(r.oid, c.oid, 'UPDATE')
+        OR has_table_privilege(r.oid, c.oid, 'DELETE')
+      )
+  ) AS has_dml_without_rls,
+  EXISTS (
+    SELECT 1
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND (
+        has_table_privilege(r.oid, c.oid, 'SELECT')
+        OR has_table_privilege(r.oid, c.oid, 'INSERT')
+        OR has_table_privilege(r.oid, c.oid, 'UPDATE')
+        OR has_table_privilege(r.oid, c.oid, 'DELETE')
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM pg_attribute a
+        WHERE a.attrelid = c.oid
+          AND a.attname = 'tenant_id'
+          AND NOT a.attisdropped
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pg_policy p
+        WHERE p.polrelid = c.oid
+          AND p.polname = 'tenant_isolation'
+          AND (
+            0 = ANY (p.polroles)
+            OR EXISTS (
+              SELECT 1 FROM unnest(p.polroles) AS polrole
+              WHERE pg_has_role(r.oid, polrole, 'MEMBER')
+            )
+          )
+          AND pg_get_expr(p.polqual, p.polrelid) = '${TENANT_ISOLATION_SQL_LITERAL}'
+          AND pg_get_expr(p.polwithcheck, p.polrelid) = '${TENANT_ISOLATION_SQL_LITERAL}'
+      )
+  ) AS has_dml_missing_tenant_isolation
 FROM pg_roles r
 WHERE r.rolname = current_user
 `;
@@ -102,12 +154,15 @@ export interface AppRoleGuardRow extends RoleAttrs {
   session_role: string;
   current_role: string;
   is_app_role: boolean;
+  rolreplication: boolean;
   owns_public_relation: boolean;
   owns_security_definer: boolean;
   has_role_membership: boolean;
   member_of_table_owner: boolean;
   has_definer_access: boolean;
   has_nontenant_policy: boolean;
+  has_dml_without_rls: boolean;
+  has_dml_missing_tenant_isolation: boolean;
 }
 
 /** Fail closed unless the connected role is NOSUPERUSER and NOBYPASSRLS. */
@@ -139,6 +194,9 @@ export function assertRestrictedAppRole(
     );
   }
   assertNosuperuserNobypassrls(row, REQUIRED_APP_ROLE);
+  if (row.rolreplication) {
+    throw new RuntimeConfigError(`${REQUIRED_APP_ROLE} must be NOREPLICATION`);
+  }
   if (row.owns_public_relation) {
     throw new RuntimeConfigError(`${REQUIRED_APP_ROLE} must not own relations in public`);
   }
@@ -157,6 +215,16 @@ export function assertRestrictedAppRole(
   if (row.has_nontenant_policy) {
     throw new RuntimeConfigError(
       `${REQUIRED_APP_ROLE} must only have tenant-scoped policies (tenant_id = current_setting('app.tenant_id'))`
+    );
+  }
+  if (row.has_dml_without_rls) {
+    throw new RuntimeConfigError(
+      `${REQUIRED_APP_ROLE} must not have DML on a public table with row security disabled`
+    );
+  }
+  if (row.has_dml_missing_tenant_isolation) {
+    throw new RuntimeConfigError(
+      `${REQUIRED_APP_ROLE} must have a canonical tenant_isolation policy on every DML table with tenant_id`
     );
   }
 }

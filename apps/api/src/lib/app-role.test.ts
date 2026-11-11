@@ -10,12 +10,15 @@ function restricted(overrides: Partial<AppRoleGuardRow> = {}): AppRoleGuardRow {
     is_app_role: true,
     rolsuper: false,
     rolbypassrls: false,
+    rolreplication: false,
     owns_public_relation: false,
     owns_security_definer: false,
     has_role_membership: false,
     member_of_table_owner: false,
     has_definer_access: false,
     has_nontenant_policy: false,
+    has_dml_without_rls: false,
+    has_dml_missing_tenant_isolation: false,
     ...overrides,
   };
 }
@@ -89,6 +92,12 @@ describe('assertRestrictedAppRole', () => {
     expect(() => assertRestrictedAppRole(restricted({ rolsuper: true }))).toThrow(/NOSUPERUSER/);
   });
 
+  it('refuses REPLICATION even when NOSUPERUSER NOBYPASSRLS', () => {
+    expect(() => assertRestrictedAppRole(restricted({ rolreplication: true }))).toThrow(
+      /NOREPLICATION/
+    );
+  });
+
   it('refuses a table owner', () => {
     expect(() => assertRestrictedAppRole(restricted({ owns_public_relation: true }))).toThrow(
       /must not own relations in public/
@@ -123,5 +132,17 @@ describe('assertRestrictedAppRole', () => {
     expect(() => assertRestrictedAppRole(restricted({ has_nontenant_policy: true }))).toThrow(
       /tenant-scoped policies/
     );
+  });
+
+  it('refuses DML on a public table with row security disabled', () => {
+    expect(() => assertRestrictedAppRole(restricted({ has_dml_without_rls: true }))).toThrow(
+      /row security disabled/
+    );
+  });
+
+  it('refuses DML tables with tenant_id missing canonical tenant_isolation', () => {
+    expect(() =>
+      assertRestrictedAppRole(restricted({ has_dml_missing_tenant_isolation: true }))
+    ).toThrow(/canonical tenant_isolation/);
   });
 });
