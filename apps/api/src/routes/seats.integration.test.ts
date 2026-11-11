@@ -749,6 +749,85 @@ describe('seats integration', () => {
     }
   }, 20_000);
 
+  it('aborts slow-drip SMTP at 15s, rolls back the invite, and does not hold the seat lock past that bound', async () => {
+    const sockets: net.Socket[] = [];
+    const closed = new Set<net.Socket>();
+    const dripTimers: ReturnType<typeof setTimeout>[] = [];
+    const drip = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.on('error', () => undefined);
+      socket.on('close', () => closed.add(socket));
+      socket.write('220 slow.example.com ESMTP\r\n');
+      const tick = () => {
+        if (socket.destroyed) return;
+        socket.write('x');
+        dripTimers.push(setTimeout(tick, 1_500));
+      };
+      socket.once('data', tick);
+    });
+    await new Promise<void>((resolve) => drip.listen(0, '127.0.0.1', () => resolve()));
+    const port = (drip.address() as AddressInfo).port;
+    const admin = await login('owner@example.com', 'Avery Owner');
+    const before = await admin.get('/api/v1/tenant/seats');
+    const used = before.body.seats_used as number;
+    setEmailAdapter(
+      createSmtpEmailAdapter({
+        host: '127.0.0.1',
+        port,
+        from: 'noreply@example.com',
+        secure: false,
+      })
+    );
+    const started = Date.now();
+    try {
+      const inviteReq = admin.post('/api/v1/tenant/seats/invite').send({
+        email: 'slow.smtp@example.com',
+        role: 'member',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const deactivateReq = admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/deactivate`);
+      const [created, deactivated] = await Promise.all([inviteReq, deactivateReq]);
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(14_000);
+      expect(elapsed).toBeLessThan(20_000);
+      expect(created.status).toBe(500);
+      expect(created.body.error.code).toBe('INTERNAL');
+      expect(created.body.error.message).toBe('Internal server error');
+      expect(JSON.stringify(created.body)).not.toMatch(/ETIMEDOUT|ECONNECTION|ESOCKET|ESENDDEADLINE|Greeting|smtp/i);
+      expect(deactivated.status).toBe(200);
+      expect(
+        deactivated.body.members.find((m: { id: string }) => m.id === MEMBERSHIP_MEMBER)?.seat_status
+      ).toBe('deactivated');
+      const after = await admin.get('/api/v1/tenant/seats');
+      expect(after.body.invites.some((i: { email: string }) => i.email === 'slow.smtp@example.com')).toBe(
+        false
+      );
+      expect(after.body.seats_used).toBe(used - 1);
+      const leftover = new pg.Client({ connectionString: stack.ownerUrl });
+      await leftover.connect();
+      try {
+        const rows = await leftover.query(
+          `SELECT id FROM invites WHERE tenant_id = $1 AND email = 'slow.smtp@example.com'`,
+          [ACME]
+        );
+        expect(rows.rowCount).toBe(0);
+      } finally {
+        await leftover.end();
+      }
+      const until = Date.now() + 1_000;
+      while (closed.size === 0 && Date.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(closed.size > 0 || sockets.some((socket) => socket.destroyed)).toBe(true);
+    } finally {
+      setEmailAdapter(createCapturingEmailAdapter(inbox));
+      await admin.post(`/api/v1/tenant/seats/${MEMBERSHIP_MEMBER}/reactivate`);
+      for (const timer of dripTimers) clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => drip.close((err) => (err ? reject(err) : resolve())));
+    }
+  }, 30_000);
+
   it('rolls back a new invite when email send fails so the seat is not held', async () => {
     const admin = await login('owner@example.com', 'Avery Owner');
     const before = await admin.get('/api/v1/tenant/seats');

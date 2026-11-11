@@ -4,7 +4,9 @@
  * Outside development/test the log transport is refused unless SMTP_HOST is set.
  */
 
+import net from 'node:net';
 import nodemailer from 'nodemailer';
+import type { Transporter } from 'nodemailer';
 import type { EmailAdapter, EmailMessage, SmtpConfig } from '@meeting-assistant/shared';
 import { logger } from './logger.js';
 
@@ -12,6 +14,8 @@ import { logger } from './logger.js';
 export const SMTP_CONNECTION_TIMEOUT_MS = 5_000;
 export const SMTP_GREETING_TIMEOUT_MS = 5_000;
 export const SMTP_SOCKET_TIMEOUT_MS = 10_000;
+/** Hard cap so a slow-drip SMTP cannot hold the tenant/seat lock past this bound. */
+export const SMTP_SEND_DEADLINE_MS = 15_000;
 
 export function allowLogEmailTransport(env = process.env.NODE_ENV): boolean {
   return env === 'development' || env === 'test';
@@ -46,8 +50,8 @@ export function createCapturingEmailAdapter(sent: EmailMessage[] = []): EmailAda
   };
 }
 
-export function createSmtpEmailAdapter(config: SmtpConfig): EmailAdapter {
-  const transporter = nodemailer.createTransport({
+function smtpTransportOptions(config: SmtpConfig) {
+  return {
     host: config.host,
     port: config.port,
     secure: config.secure ?? config.port === 465,
@@ -55,19 +59,110 @@ export function createSmtpEmailAdapter(config: SmtpConfig): EmailAdapter {
     connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
     greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
     socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+  };
+}
+
+type SmtpSocketOwner = {
+  transporter: Transporter;
+  destroy: () => void;
+};
+
+function createTrackedSmtpTransport(config: SmtpConfig): SmtpSocketOwner {
+  const sockets = new Set<net.Socket>();
+  const transporter = nodemailer.createTransport({
+    ...smtpTransportOptions(config),
+    getSocket(_opts: unknown, callback: (err: Error | null, socketOpts?: { connection: net.Socket } | false) => void) {
+      const socket = net.connect({ host: config.host, port: config.port });
+      sockets.add(socket);
+      const onError = (err: Error) => {
+        sockets.delete(socket);
+        callback(err);
+      };
+      socket.once('error', onError);
+      socket.once('connect', () => {
+        socket.off('error', onError);
+        callback(null, { connection: socket });
+      });
+      socket.once('close', () => sockets.delete(socket));
+    },
   });
 
   return {
+    transporter,
+    destroy() {
+      for (const socket of sockets) {
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+      }
+      sockets.clear();
+      try {
+        transporter.close();
+      } catch {
+        // ignore
+      }
+    },
+  };
+}
+
+/** SMTP err.code / cause for server-side logs only — never HTTP bodies. */
+export function smtpLogFields(err: unknown): { smtpCode?: string; smtpCause?: string } {
+  if (!err || typeof err !== 'object') return {};
+  const rec = err as { code?: unknown; cause?: unknown };
+  const fields: { smtpCode?: string; smtpCause?: string } = {};
+  if (rec.code != null && rec.code !== '') {
+    fields.smtpCode = String(rec.code);
+  }
+  if (rec.cause != null) {
+    if (typeof rec.cause === 'object' && rec.cause && 'code' in rec.cause) {
+      const causeCode = (rec.cause as { code?: unknown }).code;
+      if (causeCode != null && causeCode !== '') {
+        fields.smtpCause = String(causeCode);
+      }
+    } else if (typeof rec.cause === 'string' && rec.cause !== '') {
+      fields.smtpCause = rec.cause;
+    }
+  }
+  return fields;
+}
+
+export function createSmtpEmailAdapter(config: SmtpConfig): EmailAdapter {
+  return {
     transport: 'smtp',
     async send(message: EmailMessage): Promise<void> {
-      await transporter.sendMail({
+      const tracked = createTrackedSmtpTransport(config);
+      let timedOut = false;
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          timedOut = true;
+          tracked.destroy();
+          reject(Object.assign(new Error('SMTP send deadline exceeded'), { code: 'ESENDDEADLINE' }));
+        }, SMTP_SEND_DEADLINE_MS);
+      });
+      const sendPromise = tracked.transporter.sendMail({
         from: config.from,
         to: message.to,
         subject: message.subject,
         text: message.text,
         html: message.html,
       });
-      logger.info({ to: message.to, subject: message.subject, transport: 'smtp' }, 'email dispatched');
+      void sendPromise.catch(() => undefined);
+      try {
+        await Promise.race([sendPromise, deadline]);
+        logger.info({ to: message.to, subject: message.subject, transport: 'smtp' }, 'email dispatched');
+      } catch (err) {
+        tracked.destroy();
+        if (timedOut) {
+          throw Object.assign(new Error('SMTP send deadline exceeded'), { code: 'ESENDDEADLINE' });
+        }
+        throw err;
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        tracked.destroy();
+      }
     },
   };
 }
@@ -118,7 +213,8 @@ export async function sendInviteEmail(params: {
       text: `You were invited to ${params.tenantName}. Open this single-use link, then sign in: ${params.acceptUrl}`,
       acceptUrl: params.acceptUrl,
     });
-  } catch {
+  } catch (err) {
+    logger.error(smtpLogFields(err), 'invite email could not be sent');
     throw new Error('Invite email could not be sent');
   }
 }
