@@ -75,4 +75,5 @@
 :root {
   --font-marketing: 'Manrope', ui-sans-serif, system-ui, sans-serif;
   --font-app: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-app-mono: 'Geist Mono', ui-monospace, monospace;
 }
