@@ -5,7 +5,7 @@ import { UserMenu } from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
 
 const navItems = [
-  { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/meetings', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/meetings', label: 'Meetings', icon: Calendar },
 ];
 
@@ -34,7 +34,7 @@ export function Layout() {
 
             return (
               <Link
-                key={item.path}
+                key={item.label}
                 to={item.path}
                 className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   isActive

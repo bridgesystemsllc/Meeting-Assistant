@@ -8,56 +8,46 @@ import Link from "next/link";
 const plans = [
   {
     name: "Starter",
-    subtitle: "Free Trial",
-    monthlyPrice: 0,
-    annualPrice: 0,
-    priceLabel: "Free for 14 days",
-    meetings: "5 meetings total",
+    subtitle: "Pilot teams",
+    blurb: "For evaluating the product with your admin.",
+    meetings: "Pilot meeting volume, set by your admin",
     features: ["AI meeting notes", "Action items & decisions", "Full transcripts", "Email delivery", "1 user"],
-    cta: "Start Free Trial",
+    cta: "Join the waitlist",
     ctaStyle: "btn-outline",
     badge: null as string | null,
-    note: "No credit card required",
   },
   {
     name: "Pro",
     subtitle: "For growing teams",
-    monthlyPrice: 29,
-    annualPrice: 23,
-    priceLabel: "/user/mo",
-    meetings: "Unlimited meetings",
+    blurb: "Team sharing, analytics, and integrations. Seat limits are set by your admin.",
+    meetings: "Seat-limited meetings",
     features: ["Everything in Starter", "Team sharing & collaboration", "Analytics dashboard", "Slack & email integrations", "Priority transcription", "Up to 10 users"],
-    cta: "Get Started",
+    cta: "Join the waitlist",
     ctaStyle: "btn-violet",
     badge: "Most Popular",
-    note: null as string | null,
   },
   {
     name: "Enterprise",
     subtitle: "For organizations",
-    monthlyPrice: 600,
-    annualPrice: 480,
-    priceLabel: "/mo (up to 20 users)",
-    meetings: "Unlimited meetings",
+    blurb: "Dedicated setup, SSO, and admin controls. Contact us for a pilot.",
+    meetings: "Admin-provisioned",
     features: ["Everything in Pro", "Dedicated setup & onboarding", "Priority support", "Custom integrations", "SSO / SAML", "Admin dashboard", "SLA guarantee"],
-    cta: "Contact Sales",
+    cta: "Contact us",
     ctaStyle: "btn-cyan-outline",
     badge: null,
-    note: "Setup fee applies",
   },
 ];
 
 const faqs = [
-  { q: "What happens after my free trial?", a: "After 14 days or 5 meetings (whichever comes first), you can upgrade to Pro or Enterprise. Your data is preserved." },
-  { q: "Can I change plans later?", a: "Yes. Upgrade or downgrade anytime. Changes take effect on your next billing cycle." },
+  { q: "How do we get access?", a: "Tenants are created by an admin. There is no self-serve signup. Join the waitlist and we will provision a workspace." },
+  { q: "Can I change plans later?", a: "Yes. Plan changes are handled by your admin. Nothing in this product displays or stores commercial amounts." },
   { q: "How does the bot appear in meetings?", a: "The bot joins as a named participant ('Meeting Recorder'). All attendees can see it. No hidden recording." },
   { q: "What platforms are supported?", a: "Zoom, Google Meet, and Microsoft Teams. Webex support is coming soon." },
-  { q: "Is my data secure?", a: "Yes. All recordings and transcripts are encrypted at rest and in transit. We are SOC 2 compliant. Enterprise plans include custom data retention policies." },
-  { q: "Can I add more than 20 users on Enterprise?", a: "Yes. Contact sales for volume pricing for teams larger than 20." },
+  { q: "Is my data secure?", a: "Yes. Recordings are not stored by us. Transcripts are encrypted at rest and in transit. Enterprise plans include custom data retention policies." },
+  { q: "Can we add more seats on Enterprise?", a: "Yes. Contact us for larger teams. Seat limits are enforced in-product; commercial terms live outside the app." },
 ];
 
 export default function PricingPage() {
-  const [annual, setAnnual] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
 
   return (
@@ -65,32 +55,20 @@ export default function PricingPage() {
       <div className="max-w-7xl mx-auto px-6">
         <ScrollReveal>
           <div className="text-center mb-16">
-            <h1 className="text-4xl md:text-6xl font-black tracking-tight mb-4">Simple pricing for every team</h1>
-            <p className="text-text-secondary text-lg">Start free. Scale when you&apos;re ready.</p>
-            <div className="flex items-center justify-center gap-3 mt-8">
-              <span className={`text-sm font-medium ${!annual ? "text-text-primary" : "text-text-muted"}`}>Monthly</span>
-              <button onClick={() => setAnnual(!annual)} className={`relative w-12 h-6 rounded-full transition-colors ${annual ? "bg-violet" : "bg-elevated"}`} aria-label="Toggle annual pricing">
-                <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${annual ? "translate-x-7" : "translate-x-1"}`} />
-              </button>
-              <span className={`text-sm font-medium ${annual ? "text-text-primary" : "text-text-muted"}`}>Annual</span>
-              {annual && <span className="bg-positive/15 text-positive text-xs font-semibold px-2 py-0.5 rounded-full">Save 20%</span>}
-            </div>
+            <h1 className="text-4xl md:text-6xl font-black tracking-tight mb-4">Plans for every team</h1>
+            <p className="text-text-secondary text-lg">Seat counts and commercial terms live outside the product.</p>
           </div>
         </ScrollReveal>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-24">
           {plans.map((plan, i) => (
             <ScrollReveal key={plan.name} delay={i * 0.1}>
-              <div className={`relative card p-8 flex flex-col h-full ${plan.badge ? "border-violet shadow-glow-violet" : ""}`}>
+              <div className={`relative card p-8 flex flex-col h-full ${plan.badge ? "border-violet" : ""}`}>
                 {plan.badge && <span className="absolute -top-3 left-1/2 -translate-x-1/2 bg-violet text-white text-xs font-semibold px-3 py-1 rounded-full">{plan.badge}</span>}
                 <h3 className="text-xl font-bold">{plan.name}</h3>
                 <p className="text-text-muted text-sm mb-4">{plan.subtitle}</p>
                 <div className="mb-6">
-                  {plan.monthlyPrice === 0 ? (
-                    <p className="text-3xl font-black">{plan.priceLabel}</p>
-                  ) : (
-                    <p className="text-3xl font-black">${annual ? plan.annualPrice : plan.monthlyPrice}<span className="text-base font-normal text-text-secondary">{plan.priceLabel}</span></p>
-                  )}
+                  <p className="text-lg font-semibold">{plan.blurb}</p>
                   <p className="text-text-secondary text-sm mt-1">{plan.meetings}</p>
                 </div>
                 <ul className="space-y-3 mb-8 flex-1">
@@ -100,8 +78,7 @@ export default function PricingPage() {
                     </li>
                   ))}
                 </ul>
-                <Link href={plan.name === "Enterprise" ? "#contact" : "/signup"} className={`${plan.ctaStyle} text-center w-full`}>{plan.cta}</Link>
-                {plan.note && <p className="text-text-muted text-xs text-center mt-3">{plan.note}</p>}
+                <Link href="#waitlist" className={`${plan.ctaStyle} text-center w-full`}>{plan.cta}</Link>
               </div>
             </ScrollReveal>
           ))}
@@ -128,8 +105,8 @@ export default function PricingPage() {
               ))}
             </div>
             <div className="flex items-center justify-center gap-4">
-              <Link href="#contact" className="btn-violet">Talk to Sales</Link>
-              <Link href="#contact" className="btn-outline">Book a Demo</Link>
+              <Link href="#waitlist" className="btn-violet">Talk to us</Link>
+              <Link href="#waitlist" className="btn-outline">Join the waitlist</Link>
             </div>
           </div>
         </ScrollReveal>
