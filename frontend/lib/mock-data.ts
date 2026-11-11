@@ -55,7 +55,7 @@ export const MOCK_MEETINGS: Meeting[] = [
       { decision: "Allocate $50K for LATAM pilot campaign", owner: "Finance" },
     ],
     speakers: [
-      { id: "A", name: "Ahmad", talk_time_pct: 38 },
+      { id: "A", name: "Alex", talk_time_pct: 38 },
       { id: "B", name: "Sarah", talk_time_pct: 29 },
       { id: "C", name: "Marcus", talk_time_pct: 22 },
       { id: "D", name: "Dev", talk_time_pct: 11 },
@@ -90,7 +90,7 @@ export const MOCK_MEETINGS: Meeting[] = [
     speakers: [
       { id: "A", name: "Jared", talk_time_pct: 45 },
       { id: "B", name: "Chase", talk_time_pct: 35 },
-      { id: "C", name: "Ahmad", talk_time_pct: 20 },
+      { id: "C", name: "Alex", talk_time_pct: 20 },
     ],
     risks: [{ risk: "Sprint velocity declining for 3rd consecutive sprint", severity: "high" }],
     topics: [
@@ -102,7 +102,7 @@ export const MOCK_MEETINGS: Meeting[] = [
   },
   {
     id: "3",
-    title: "KarEve Onboarding Call",
+    title: "Lumen & Vale Onboarding Call",
     platform: "zoom",
     started_at: "2026-03-02T09:00:00Z",
     duration_seconds: 5400,

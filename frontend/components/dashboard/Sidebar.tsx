@@ -36,9 +36,9 @@ export function Sidebar({ onJoinMeeting }: { onJoinMeeting: () => void }) {
         </nav>
         <div className="p-4 border-t border-border-subtle">
           <div className="flex items-center gap-3 px-2 mb-3">
-            <div className="w-8 h-8 rounded-full bg-violet/20 flex items-center justify-center text-violet text-sm font-bold">A</div>
+            <div className="w-8 h-8 rounded-full bg-violet/20 flex items-center justify-center text-violet text-sm font-bold">J</div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-text-primary truncate">Ahmad</p>
+              <p className="text-sm font-medium text-text-primary truncate">Jane Smith</p>
               <p className="text-xs text-text-muted truncate">Enterprise</p>
             </div>
           </div>

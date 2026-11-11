@@ -1,0 +1,367 @@
+import { Router, type Request, type Response } from 'express';
+import type { OidcProvider } from '@meeting-assistant/shared';
+import { OidcProviderSchema } from '@meeting-assistant/shared';
+import { hashToken } from '../lib/crypto.js';
+import { HttpError, sendError } from '../lib/http-error.js';
+import { logger } from '../lib/logger.js';
+import { recordAudit } from '../lib/audit.js';
+import {
+  resolveIdentity,
+  consumeOidcState,
+  lookupInvite,
+  storeOidcState,
+  type InviteLookup,
+} from '../lib/auth-db.js';
+import { db, withTenant } from '../lib/db.js';
+import {
+  buildAuthorizationRequest,
+  callbackUrlFromStored,
+  exchangeAuthorizationCode,
+  getProviderConfig,
+} from '../lib/oidc.js';
+import {
+  oidcStateCookieMatches,
+  serializeClearedOidcStateCookie,
+  serializeOidcStateCookie,
+} from '../lib/oidc-state-cookie.js';
+import { issueSession, loadSession, readSessionToken, revokeSession } from '../lib/session.js';
+
+export const authRouter = Router();
+
+authRouter.use((_req, res, next) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+
+const OIDC_STATE_TTL_MS = 10 * 60 * 1000;
+
+function frontendUrl(): string {
+  return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+}
+
+function redirectToLogin(res: { redirect: (url: string) => void }, error: string): void {
+  res.redirect(`${frontendUrl()}/login?error=${encodeURIComponent(error)}`);
+}
+
+function parseProvider(value: string): OidcProvider | null {
+  const parsed = OidcProviderSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function appendCookies(res: Response, values: string | string[]): void {
+  for (const value of Array.isArray(values) ? values : [values]) {
+    res.append('Set-Cookie', value);
+  }
+}
+
+const FAILED_INVITE_LOOKUP_CODES = new Set(['INVITE_USED', 'INVITE_REVOKED', 'INVITE_EXPIRED']);
+
+async function recordFailedInviteLookup(found: InviteLookup): Promise<void> {
+  const tenantId = found.tenant?.id;
+  const code = found.code ?? 'INVALID_INVITE';
+  if (!tenantId || !FAILED_INVITE_LOOKUP_CODES.has(code)) {
+    return;
+  }
+  await withTenant(tenantId, (tx) =>
+    recordAudit(tx, {
+      action: 'failed-invite',
+      targetType: 'invite',
+      targetId: found.id ?? null,
+      email: found.email,
+      metadata: { code },
+    })
+  );
+}
+
+const INVITE_ERROR_QUERY: Record<string, string> = {
+  INVALID_INVITE: 'invalid_invite',
+  INVITE_USED: 'invite_used',
+  INVITE_EXPIRED: 'invite_expired',
+  INVITE_REVOKED: 'invite_revoked',
+  INVITE_WRONG_TENANT: 'invite_tenant',
+  INVITE_EMAIL_MISMATCH: 'invite_email',
+  SEAT_LIMIT_REACHED: 'seat_limit',
+  MEMBER_DEACTIVATED: 'member_deactivated',
+  ALREADY_MEMBER: 'already_member',
+  LAST_OWNER: 'last_owner',
+  EMAIL_UNVERIFIED: 'unverified',
+};
+
+authRouter.get('/invites/:token', async (req, res, next) => {
+  try {
+    const token = req.params.token;
+    if (!token) {
+      sendError(res, 400, 'INVALID_INVITE', 'That invite link is invalid.');
+      return;
+    }
+    const slug = typeof req.query.tenant === 'string' ? req.query.tenant : null;
+    const found = await lookupInvite(hashToken(token), slug);
+    if (!found.ok) {
+      await recordFailedInviteLookup(found);
+      const code = found.code ?? 'INVALID_INVITE';
+      const messages: Record<string, string> = {
+        INVALID_INVITE: 'That invite link is invalid.',
+        INVITE_USED: 'That invite link has already been used.',
+        INVITE_EXPIRED: 'That invite link has expired.',
+        INVITE_REVOKED: 'That invite was revoked.',
+        INVITE_WRONG_TENANT: 'That invite belongs to a different workspace.',
+      };
+      sendError(res, 400, code, messages[code] ?? messages.INVALID_INVITE);
+      return;
+    }
+    res.json({
+      email: found.email,
+      role: found.role,
+      expires_at: found.expires_at,
+      tenant: found.tenant,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.get('/login/:provider', async (req, res, next) => {
+  try {
+    const provider = parseProvider(req.params.provider);
+    if (!provider) {
+      sendError(res, 404, 'OIDC_FAILED', 'Unknown identity provider');
+      return;
+    }
+    if (!getProviderConfig(provider)) {
+      sendError(res, 503, 'OIDC_FAILED', `${provider} sign-in is not configured`);
+      return;
+    }
+
+    const invite = typeof req.query.invite === 'string' ? req.query.invite : null;
+    const started = await buildAuthorizationRequest(provider);
+    await storeOidcState({
+      state: started.state,
+      nonce: started.nonce,
+      codeVerifier: started.codeVerifier,
+      provider,
+      redirectUri: started.redirectUri,
+      inviteTokenHash: invite ? hashToken(invite) : null,
+      expiresAt: new Date(Date.now() + OIDC_STATE_TTL_MS),
+    });
+
+    appendCookies(res, serializeOidcStateCookie(started.state));
+    res.redirect(started.url.toString());
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.get('/callback/:provider', async (req, res, next) => {
+  try {
+    const provider = parseProvider(req.params.provider);
+    if (!provider) {
+      sendError(res, 400, 'OIDC_FAILED', 'Unknown identity provider');
+      return;
+    }
+
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (!state) {
+      sendError(res, 400, 'INVALID_STATE', 'OIDC state mismatch');
+      return;
+    }
+
+    if (!oidcStateCookieMatches(req.cookies, state)) {
+      sendError(res, 400, 'INVALID_STATE', 'OIDC state mismatch');
+      return;
+    }
+
+    const stored = await consumeOidcState(state);
+    if (!stored) {
+      sendError(res, 400, 'INVALID_STATE', 'OIDC state mismatch');
+      return;
+    }
+
+    if (stored.provider !== provider) {
+      sendError(res, 400, 'INVALID_STATE', 'OIDC state mismatch');
+      return;
+    }
+
+    const nonceParam = typeof req.query.nonce === 'string' ? req.query.nonce : undefined;
+    if (nonceParam && nonceParam !== stored.nonce) {
+      sendError(res, 400, 'INVALID_NONCE', 'OIDC nonce mismatch');
+      return;
+    }
+
+    if (!stored.redirect_uri) {
+      sendError(res, 400, 'OIDC_FAILED', 'OIDC redirect_uri missing');
+      return;
+    }
+
+    const currentUrl = new URL(`http://127.0.0.1${req.originalUrl}`);
+    const callbackUrl = callbackUrlFromStored(stored.redirect_uri, currentUrl);
+
+    let claims;
+    try {
+      claims = await exchangeAuthorizationCode({
+        provider,
+        callbackUrl,
+        expectedState: stored.state,
+        expectedNonce: stored.nonce,
+        codeVerifier: stored.code_verifier || '',
+      });
+    } catch (err) {
+      if (stored.invite_token_hash) {
+        const preview = await lookupInvite(stored.invite_token_hash, null);
+        if (preview.tenant?.id) {
+          try {
+            await withTenant(preview.tenant.id, (tx) =>
+              recordAudit(tx, {
+                action: 'failed-login',
+                targetType: 'invite',
+                targetId: preview.id ?? null,
+                metadata: { code: err instanceof HttpError ? err.code : 'OIDC_FAILED' },
+              })
+            );
+          } catch (auditErr) {
+            logger.error({ err: auditErr }, 'failed-login audit failed');
+          }
+        }
+      }
+      if (err instanceof HttpError) {
+        sendError(res, err.statusCode, err.code, err.message);
+        return;
+      }
+      throw err;
+    }
+
+    const preview = stored.invite_token_hash ? await lookupInvite(stored.invite_token_hash, null) : null;
+    const resolved = await db.transaction(async (tx) => {
+      const result = await resolveIdentity(
+        {
+          issuer: claims.iss,
+          subject: claims.sub,
+          provider,
+          email: claims.email,
+          name: claims.name,
+          emailVerified: claims.emailVerified,
+          inviteTokenHash: stored.invite_token_hash,
+        },
+        tx
+      );
+      if (stored.invite_token_hash && result.invite) {
+        const tenantId = result.invite.tenant_id ?? preview?.tenant?.id ?? null;
+        if (tenantId) {
+          await tx.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+          if (result.invite.ok && result.user) {
+            await recordAudit(tx, {
+              actorUserId: result.user.id,
+              action: 'invite.accepted',
+              targetType: 'membership',
+              targetId: result.invite.membership_id ?? null,
+              email: result.user.email,
+            });
+          } else if (!result.invite.ok) {
+            await recordAudit(tx, {
+              actorUserId: result.user?.id ?? null,
+              action: 'failed-invite',
+              targetType: 'invite',
+              targetId: preview?.id ?? null,
+              email: claims.email,
+              metadata: { code: result.invite.code },
+            });
+          }
+        }
+      }
+      return result;
+    });
+
+    if (!resolved.ok || !resolved.user) {
+      const code = resolved.code ?? 'OIDC_FAILED';
+      if (code === 'EMAIL_UNVERIFIED') {
+        sendError(res, 400, 'EMAIL_UNVERIFIED', 'Email is not verified');
+        return;
+      }
+      sendError(res, 400, code, 'OIDC sign-in rejected');
+      return;
+    }
+
+    const memberships = resolved.memberships ?? [];
+    // An invite in the login state always reports its outcome. A used/expired
+    // link must not silently succeed just because the user already has a seat.
+    if (stored.invite_token_hash && resolved.invite && !resolved.invite.ok) {
+      logger.info({ code: resolved.invite.code }, 'invite acceptance failed');
+      redirectToLogin(
+        res,
+        INVITE_ERROR_QUERY[resolved.invite.code ?? 'INVALID_INVITE'] ?? 'invalid_invite'
+      );
+      return;
+    }
+
+    if (memberships.length === 0) {
+      redirectToLogin(res, 'no_access');
+      return;
+    }
+
+    // Invited / deactivated members still get a session so /me can show
+    // status and requireActiveSeat can return 403 SEAT_INACTIVE (ATLAS Q11).
+    const active = memberships.filter((m) => m.seat_status === 'active');
+    const selected = active[0] ?? memberships[0];
+
+    const previous = readSessionToken(req.cookies);
+    const userId = resolved.user.id;
+    const session = await withTenant(selected.tenant.id, async (tx) => {
+      const issued = await issueSession({
+        userId,
+        activeTenantId: selected.tenant.id,
+        previousToken: previous,
+        client: tx,
+      });
+      await recordAudit(tx, {
+        actorUserId: userId,
+        action: 'login',
+        targetType: 'user',
+        targetId: userId,
+      });
+      return issued;
+    });
+
+    appendCookies(res, serializeClearedOidcStateCookie());
+    appendCookies(res, session.setCookie);
+    res.redirect(`${frontendUrl()}/meetings`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function handleLogout(req: Request, res: Response, wantsJson: boolean): Promise<void> {
+  const token = readSessionToken(req.cookies);
+  const ctx = token ? await loadSession(token) : null;
+  const cleared = await revokeSession(token);
+  if (ctx?.user && ctx.active_tenant_id) {
+    try {
+      await withTenant(ctx.active_tenant_id, (tx) =>
+        recordAudit(tx, {
+          actorUserId: ctx.user.id,
+          action: 'logout',
+          targetType: 'user',
+          targetId: ctx.user.id,
+        })
+      );
+    } catch (err) {
+      logger.error({ err }, 'logout audit failed');
+    }
+  }
+  appendCookies(res, serializeClearedOidcStateCookie());
+  appendCookies(res, cleared);
+  if (wantsJson) {
+    res.json({ ok: true });
+    return;
+  }
+  res.redirect(`${frontendUrl()}/login`);
+}
+
+authRouter.post('/logout', async (req, res, next) => {
+  try {
+    const wantsJson =
+      req.headers.accept?.includes('application/json') ||
+      req.headers['content-type']?.includes('json');
+    await handleLogout(req, res, Boolean(wantsJson));
+  } catch (err) {
+    next(err);
+  }
+});

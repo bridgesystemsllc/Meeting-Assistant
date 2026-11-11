@@ -3,8 +3,8 @@
 import { useState } from "react";
 
 export default function SettingsPage() {
-  const [name, setName] = useState("Ahmad");
-  const [email, setEmail] = useState("ahmad@bridgesystems.co");
+  const [name, setName] = useState("Jane Smith");
+  const [email, setEmail] = useState("jane@example.com");
   const [emailNotifs, setEmailNotifs] = useState(true);
   const [slackNotifs, setSlackNotifs] = useState(false);
 
@@ -15,7 +15,7 @@ export default function SettingsPage() {
         <h2 className="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-4">Profile</h2>
         <div className="card p-6 space-y-4">
           <div className="flex items-center gap-4 mb-4">
-            <div className="w-16 h-16 rounded-full bg-violet/20 flex items-center justify-center text-violet text-2xl font-bold">A</div>
+            <div className="w-16 h-16 rounded-full bg-violet/20 flex items-center justify-center text-violet text-2xl font-bold">J</div>
             <button className="btn-outline text-sm py-2">Change avatar</button>
           </div>
           <div>

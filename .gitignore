@@ -1,29 +1,46 @@
 # Dependencies
 node_modules/
-frontend/node_modules/
 
-# Next.js build
-frontend/.next/
-frontend/out/
+# Build outputs
+dist/
+.next/
 
 # Environment
 .env
 .env.local
-.env.production
-.env*.local
+.env.*.local
 
 # Logs
 logs/
 *.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/
-.idea/
+# Testing
+coverage/
+.playwright-stack.json
+test-results/
+playwright-report/
+blob-report/
 
-# Debug
-npm-debug.log*
-._*
+# Turbo
+.turbo/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Vite config build output
+vite.config.js
+vite.config.d.ts
+
+# Package manager
+# package-lock.json is committed for reproducible CI builds

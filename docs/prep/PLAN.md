@@ -228,7 +228,7 @@ meeting-assistant/
 
 | File | Action |
 |------|--------|
-| `frontend/lib/mock-data.ts` | SCRUB [BRAND] string |
+| `frontend/lib/mock-data.ts` | SCRUB "[BRAND]" string |
 | `frontend/app/(dashboard)/settings/page.tsx` | SCRUB hardcoded owner |
 | `frontend/components/dashboard/Sidebar.tsx` | SCRUB hardcoded owner |
 | `frontend/app/(marketing)/pricing/page.tsx` | REMOVE price literals |
@@ -499,7 +499,7 @@ What should be the default value for `tenant_settings.transcript_retention_days`
 
 **Q2: Repo visibility**  
 When will the repo be made private? When will secret scanning be enabled?
-> *Ahmad action. Recommend before any pilot data exists.*
+> *owner action. Recommend before any pilot data exists.*
 
 **Q3: Recap email audience**  
 Default recipient: seat-holder only, or all invited attendees?
@@ -511,11 +511,11 @@ What is the real product name for Bridge-level brand strings (logo text, H1, CTA
 
 **Q5: Consent notice review**  
 Who will review the consent notice text before the first live tenant, and when?
-> *Ahmad action. Not legal advice from Bridge agents.*
+> *owner action. Not legal advice from Bridge agents.*
 
 **Q6: Per-seat price points**  
 What are the per-seat price points? Which billing provider?
-> *Ahmad decision. Not in v1 scope; seat_limit is enforced but no billing integration.*
+> *owner decision. Not in v1 scope; seat_limit is enforced but no billing integration.*
 
 **Q7: Calendar auto-join**  
 Is Recall Calendar API integration in scope for Phase 4, or deferred?
@@ -572,4 +572,4 @@ Per spec §8, each P0 maps to specific tests:
 | P0-5 | Unit tests: 400 on unsigned/invalid; boot fails without secret |
 | P0-6 | Unit tests: bot name validation; integration: consent_denied path |
 | P0-7 | grep invariant test: no price literals |
-| P0-8 | grep invariant test: no [BRAND] outside .git; no hardcoded owner |
+| P0-8 | grep invariant test: no "[BRAND]" outside .git; no hardcoded owner |
