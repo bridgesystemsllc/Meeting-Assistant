@@ -180,7 +180,7 @@ describe('processMeeting', () => {
     expect(recallService.deleteMedia).toHaveBeenCalledWith('bot-123');
     expect(analyzeMeeting).toHaveBeenCalled();
     expect(sendRecapEmail).toHaveBeenCalled();
-    expect(lookupUserContact).toHaveBeenCalledWith(USER_ID);
+    expect(lookupUserContact).toHaveBeenCalledWith(USER_ID, TENANT_A);
     expect(job.updateProgress).toHaveBeenCalled();
   });
 
@@ -279,7 +279,7 @@ describe('processMeeting', () => {
 
   it('fails when the meeting is not in the job tenant', async () => {
     query.mockResolvedValue({ rows: [], rowCount: 0 });
-    await expect(processMeeting(job())).rejects.toThrow('MEETING_NOT_IN_TENANT');
+    await expect(processMeeting(mockJob())).rejects.toThrow('MEETING_NOT_IN_TENANT');
     expect(query).toHaveBeenCalledWith(
       'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
       ['processing', MEETING_ID, TENANT_A]
@@ -321,9 +321,9 @@ describe('processMeeting', () => {
     process.env.SMTP_HOST = 'smtp.test.com';
     process.env.SMTP_USER = 'test';
 
-    const capturedParams: unknown[][] = [];
+    const captured: Array<{ sql: string; params: unknown[] }> = [];
     query.mockImplementation(async (sql: string, params?: unknown[]) => {
-      if (params) capturedParams.push(params);
+      if (params) captured.push({ sql, params });
       
       // Return appropriate mocks based on the query
       if (sql.includes('SELECT') && sql.includes('FROM meetings')) {
@@ -348,10 +348,19 @@ describe('processMeeting', () => {
     await processMeeting(mockJob());
 
     // All INSERT statements should have TENANT_A as the first parameter (tenant_id)
-    const insertParams = capturedParams.filter(p => p.length > 2); // INSERTs have more params
-    for (const params of insertParams) {
+    const inserts = captured.filter(({ sql }) => /^\s*INSERT\b/i.test(sql));
+    expect(inserts.length).toBeGreaterThanOrEqual(3); // transcript, analysis, email
+    for (const { params } of inserts) {
       // tenant_id should be the first param and match the meeting's tenant
       expect(params[0]).toBe(TENANT_A);
+    }
+
+    // Every UPDATE / SELECT on meetings also filters by the job tenant
+    const meetingStatements = captured.filter(({ sql }) => /\bmeetings\b/.test(sql) && !/^\s*INSERT\b/i.test(sql));
+    expect(meetingStatements.length).toBeGreaterThan(0);
+    for (const { sql, params } of meetingStatements) {
+      expect(sql).toMatch(/tenant_id = \$\d/);
+      expect(params).toContain(TENANT_A);
     }
   });
 

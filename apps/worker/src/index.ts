@@ -97,8 +97,9 @@ export async function queueMeetingProcessing(
     throw new Error('TENANT_REQUIRED');
   }
 
-  // Use meeting:${meetingId} as jobId for deduplication
-  const jobId = `meeting:${meetingId}`;
+  // One job per meeting for deduplication. BullMQ rejects custom ids that
+  // contain ':', so the separator is '-'.
+  const jobId = `meeting-${meetingId}`;
 
   const job = await meetingQueue.add(
     'process',
