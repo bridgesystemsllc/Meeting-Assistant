@@ -12,11 +12,17 @@ import { purgeExpiredAuthRows } from './lib/auth-db.js';
 import { requireWebhookSecret } from './services/webhook-verify.js';
 
 if (process.env.NODE_ENV !== 'test') {
-  assertApiRuntimeEnv();
-  if (process.env.NODE_ENV === 'production') {
-    requireWebhookSecret();
+  try {
+    assertApiRuntimeEnv();
+    if (process.env.NODE_ENV === 'production') {
+      requireWebhookSecret();
+    }
+    await assertConnectedAppRole();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
   }
-  await assertConnectedAppRole();
 }
 
 const app = createApp();

@@ -12,8 +12,14 @@ import { assertConnectedAppRole } from './lib/app-role.js';
 import { assertWorkerRuntimeEnv } from './lib/env.js';
 
 if (process.env.NODE_ENV !== 'test') {
-  assertWorkerRuntimeEnv();
-  await assertConnectedAppRole();
+  try {
+    assertWorkerRuntimeEnv();
+    await assertConnectedAppRole();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  }
 }
 
 const QUEUE_NAME = 'meeting-processing';
