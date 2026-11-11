@@ -31,6 +31,8 @@ coverage/
 test-results/
 playwright-report/
 blob-report/
+e2e/screenshots/
+apps/web/e2e/screenshots/
 
 # Turbo
 .turbo/

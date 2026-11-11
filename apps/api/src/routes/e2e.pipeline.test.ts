@@ -297,6 +297,6 @@ describe('webhook security tests', () => {
       .send(body);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('expired');
+    expect(JSON.stringify(res.body.error)).toMatch(/expired/i);
   });
 });

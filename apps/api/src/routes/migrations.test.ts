@@ -54,7 +54,7 @@ describe('migrations', () => {
         SELECT ts.transcript_retention_days 
         FROM tenant_settings ts
         JOIN tenants t ON t.id = ts.tenant_id
-        WHERE t.slug = 'dev'
+        WHERE t.slug = 'lumen-vale'
       `);
 
       expect(result.rows.length).toBe(1);

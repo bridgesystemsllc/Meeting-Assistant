@@ -168,7 +168,7 @@ meetingsRouter.get('/:id', async (req, res) => {
  * The bot is created via Recall API and tracked by recall_bot_id.
  */
 meetingsRouter.post('/', async (req, res) => {
-  const tenantId = requireTenantId(req);
+  const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
     return;

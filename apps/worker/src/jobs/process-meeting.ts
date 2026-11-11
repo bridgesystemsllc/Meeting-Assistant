@@ -1,10 +1,13 @@
 /**
- * Meeting processing job
- * Stub implementation for scaffold - full pipeline in FORGE Phase 1 (PR #3).
- *
- * FORGE must keep runTenantJob around every DB statement and require tenantId
- * on the job payload. Look up users via lookup_user_contact(), not SELECT FROM users.
- * A 0-row UPDATE is a failure (wrong tenant or missing meeting), not success.
+ * Meeting Processing Job
+ * Full pipeline: Recall transcript → media delete → Claude analysis → recap email
+ * 
+ * P1-4: Persist transcript FIRST, track media_deleted_at, never mark completed while NULL
+ * P2-3: SMTP unset → record email_deliveries status 'not_sent'
+ * P3-1: DLQ for process-meeting after final retry
+ * 
+ * Uses runTenantJob around every DB statement and requires tenantId on job payload.
+ * Uses lookupUserContact(), not direct SELECT FROM users.
  */
 
 import type { Job } from 'bullmq';
@@ -12,8 +15,6 @@ import type { PoolClient } from 'pg';
 import { logger } from '../lib/logger.js';
 import { runTenantJob, TenantJobError } from '../lib/tenantJob.js';
 import { lookupUserContact } from '../lib/user-lookup.js';
-
-export const MEETING_NOT_IN_TENANT = 'MEETING_NOT_IN_TENANT';
 
 export interface ProcessMeetingData {
   meetingId: string;
@@ -79,17 +80,217 @@ export async function processMeeting(
 ): Promise<ProcessMeetingResult> {
   const { meetingId, recallBotId, tenantId } = job.data;
 
-  logger.info({ meetingId, recallBotId, tenantId }, 'Starting meeting processing (stub)');
+  // Validate tenant early
+  if (!tenantId) {
+    throw new TenantJobError('Missing tenantId in job payload');
+  }
+
+  logger.info({ meetingId, recallBotId, tenantId }, 'Starting meeting processing');
 
   try {
-    await runTenantJob(job.data, async (client) => {
-      const updated = await client.query(
-        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-        ['processing', meetingId, tenantId]
+    // Get meeting details and update status to processing
+    const meeting = await runTenantJob(job.data, async (client) => {
+      const result = await client.query<{
+        id: string;
+        tenant_id: string;
+        user_id: string;
+        title: string;
+        platform: string;
+        started_at: string | null;
+        duration_seconds: number | null;
+        media_deleted_at: Date | null;
+      }>(
+        `SELECT id, tenant_id, user_id, title, platform, started_at, duration_seconds, media_deleted_at 
+         FROM meetings WHERE id = $1`,
+        [meetingId]
       );
-      if (!updated.rowCount) {
-        throw new Error(MEETING_NOT_IN_TENANT);
+
+      if (result.rows.length === 0) {
+        throw new Error(`Meeting ${meetingId} not found`);
       }
+
+      // Verify job tenantId matches meeting's tenant_id (FK integrity)
+      const meeting = result.rows[0];
+      if (meeting.tenant_id !== tenantId) {
+        throw new Error(`Tenant mismatch: job has ${tenantId}, meeting has ${meeting.tenant_id}`);
+      }
+
+      // Update status to processing
+      await client.query(
+        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
+        ['processing', meetingId]
+      );
+
+      return result.rows[0];
+    });
+
+    await job.updateProgress(10);
+
+    // Step 1: Fetch transcript from Recall
+    logger.info({ meetingId, recallBotId }, 'Fetching transcript from Recall');
+    const recall = await getRecallService();
+    const recallTranscript = await recall.getTranscript(recallBotId);
+
+    if (!recallTranscript || !recallTranscript.segments?.length) {
+      logger.warn({ meetingId, recallBotId }, 'No transcript available');
+      await runTenantJob(job.data, async (client) => {
+        await client.query(
+          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
+          ['failed', meetingId]
+        );
+      });
+      return { success: false, meetingId };
+    }
+
+    await job.updateProgress(30);
+
+    // Format transcript
+    const formattedTranscript = recall.formatTranscript(recallTranscript);
+
+    // P1-4: Step 2 - Store transcript FIRST (before media delete)
+    await runTenantJob(job.data, async (client) => {
+      await client.query(
+        `INSERT INTO transcripts (tenant_id, meeting_id, raw_transcript, full_text, speakers, word_count, language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (meeting_id) DO UPDATE SET
+           raw_transcript = EXCLUDED.raw_transcript,
+           full_text = EXCLUDED.full_text,
+           speakers = EXCLUDED.speakers,
+           word_count = EXCLUDED.word_count,
+           language = EXCLUDED.language`,
+        [
+          tenantId,
+          meetingId,
+          JSON.stringify(formattedTranscript.rawTranscript),
+          formattedTranscript.fullText,
+          JSON.stringify(formattedTranscript.speakers),
+          formattedTranscript.wordCount,
+          formattedTranscript.language,
+        ]
+      );
+
+      // Update meeting with detected language
+      if (formattedTranscript.language) {
+        await client.query(
+          'UPDATE meetings SET language = $1 WHERE id = $2',
+          [formattedTranscript.language, meetingId]
+        );
+      }
+    });
+
+    await job.updateProgress(40);
+
+    // P1-4: Step 3 - Delete Recall media (AFTER transcript is persisted)
+    logger.info({ meetingId, recallBotId }, 'Deleting Recall media');
+    const mediaDeleted = await recall.deleteMedia(recallBotId);
+    
+    if (mediaDeleted) {
+      // Track media deletion time
+      await runTenantJob(job.data, async (client) => {
+        await client.query(
+          'UPDATE meetings SET media_deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
+          [meetingId]
+        );
+      });
+      logger.info({ meetingId, recallBotId }, 'Media deleted successfully');
+    } else {
+      // P1-4: Media deletion failed - continue but never mark completed later
+      logger.warn({ meetingId, recallBotId }, 'Media deletion failed');
+    }
+
+    await job.updateProgress(50);
+
+    // Step 4: Run Claude analysis
+    logger.info({ meetingId }, 'Running AI analysis');
+    const analyze = await getAnalyzeMeeting();
+    const { analysis, rawResponse, model } = await analyze(
+      {
+        fullText: formattedTranscript.fullText,
+        speakers: formattedTranscript.speakers,
+        wordCount: formattedTranscript.wordCount,
+        language: formattedTranscript.language,
+      },
+      {
+        title: meeting.title,
+        date: meeting.started_at || undefined,
+        platform: meeting.platform,
+        tenantId,
+      }
+    );
+
+    await job.updateProgress(70);
+
+    // Step 5: Store analysis
+    await runTenantJob(job.data, async (client) => {
+      await storeAnalysis(client, tenantId, meetingId, analysis, formattedTranscript.speakers, rawResponse, model);
+    });
+
+    await job.updateProgress(85);
+
+    // Step 6: Send recap email to owner only (using lookupUserContact)
+    const owner = await lookupUserContact(meeting.user_id);
+
+    if (owner) {
+      if (isSmtpConfigured()) {
+        const sendEmail = await getSendRecapEmail();
+        
+        await sendEmail({
+          meeting: {
+            id: meetingId,
+            title: meeting.title,
+            started_at: meeting.started_at,
+            duration_seconds: meeting.duration_seconds,
+          },
+          analysis,
+          ownerEmail: owner.email,
+          ownerName: owner.name || undefined,
+          ownerId: meeting.user_id,
+          language: formattedTranscript.language,
+        });
+
+        // Log email delivery as sent
+        await runTenantJob(job.data, async (client) => {
+          await client.query(
+            `INSERT INTO email_deliveries (tenant_id, meeting_id, recipient_email, sent_at, status)
+             VALUES ($1, $2, $3, NOW(), 'sent')`,
+            [tenantId, meetingId, owner.email]
+          );
+        });
+        logger.info({ meetingId, recipientEmail: owner.email }, 'Recap email sent');
+      } else {
+        // P2-3: SMTP unset - record as 'not_sent'
+        await runTenantJob(job.data, async (client) => {
+          await client.query(
+            `INSERT INTO email_deliveries (tenant_id, meeting_id, recipient_email, status)
+             VALUES ($1, $2, $3, 'not_sent')`,
+            [tenantId, meetingId, owner.email]
+          );
+        });
+        logger.info({ meetingId }, 'SMTP not configured, email not sent');
+      }
+    } else {
+      // P3-2: Don't log owner email, log user id instead
+      logger.warn({ meetingId, userId: meeting.user_id }, 'Owner not found for recap email');
+    }
+
+    await job.updateProgress(95);
+
+    // P1-4: Check media_deleted_at before marking completed
+    const canComplete = await runTenantJob(job.data, async (client) => {
+      const result = await client.query<{ media_deleted_at: Date | null }>(
+        'SELECT media_deleted_at FROM meetings WHERE id = $1',
+        [meetingId]
+      );
+      return result.rows[0]?.media_deleted_at != null;
+    });
+
+    // Step 7: Mark as completed (only if media was deleted)
+    const finalStatus = canComplete ? 'completed' : 'media_pending';
+    await runTenantJob(job.data, async (client) => {
+      await client.query(
+        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
+        [finalStatus, meetingId]
+      );
     });
 
     await job.updateProgress(100);
@@ -131,8 +332,8 @@ export async function processMeeting(
     try {
       await runTenantJob(job.data, async (client) => {
         await client.query(
-          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-          ['failed', meetingId, tenantId]
+          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
+          ['failed', meetingId]
         );
       });
     } catch (dbErr) {

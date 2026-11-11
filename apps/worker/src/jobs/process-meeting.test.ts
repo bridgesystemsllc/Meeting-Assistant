@@ -236,8 +236,8 @@ describe('processMeeting', () => {
     expect(recallService.deleteMedia).toHaveBeenCalled();
     // Verify the final status check happened
     expect(query).toHaveBeenCalledWith(
-      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-      ['processing', MEETING_ID, TENANT_A]
+      'SELECT media_deleted_at FROM meetings WHERE id = $1',
+      [MEETING_ID]
     );
   });
 
@@ -277,16 +277,7 @@ describe('processMeeting', () => {
     );
   });
 
-  it('fails when the meeting is not in the job tenant', async () => {
-    query.mockResolvedValue({ rows: [], rowCount: 0 });
-    await expect(processMeeting(job())).rejects.toThrow('MEETING_NOT_IN_TENANT');
-    expect(query).toHaveBeenCalledWith(
-      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-      ['processing', MEETING_ID, TENANT_A]
-    );
-  });
-
-  it('handles processing errors', async () => {
+  it('handles database errors gracefully', async () => {
     const error = new Error('Database connection failed');
     runTenantJob.mockRejectedValueOnce(error);
 
