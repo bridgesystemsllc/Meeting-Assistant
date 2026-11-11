@@ -226,8 +226,47 @@ describe('non-superuser non-BYPASSRLS owner', () => {
         expect(row.email_hmac).toBeNull();
         expect(row.email_masked).toBeNull();
       }
-      expect(rows.rows.find((row) => row.action === 'invite.sent')?.actor_user_id).toBe(ACME_OWNER);
-      expect(rows.rows.find((row) => row.action === 'invite.accepted')?.actor_user_id).toBeNull();
+    expect(rows.rows.find((row) => row.action === 'invite.sent')?.actor_user_id).toBe(ACME_OWNER);
+    expect(rows.rows.find((row) => row.action === 'invite.accepted')?.actor_user_id).toBeNull();
     });
+  });
+
+  it('purges audit on tenant delete and still erases rows for a tenant_id with no tenants row', async () => {
+    const tenant = await ownerQuery<{ id: string }>(
+      `INSERT INTO tenants (name, slug) VALUES ('Purge Co', 'purge-co') RETURNING id`
+    );
+    const tenantId = tenant.rows[0].id;
+    await withTenant(tenantId, async (client) => {
+      await recordAudit(client, { action: 'login', targetType: 'tenant', targetId: tenantId });
+    });
+    await ownerQuery(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+    const gone = await withTenant(tenantId, (client) => client.query('SELECT 1 FROM audit_events'));
+    expect(gone.rowCount).toBe(0);
+
+    const orphanTenantId = 'aaaaaaaa-0000-0000-0000-000000000099';
+    const user = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('orphan.purge@example.com', 'Orphan Purge') RETURNING id`
+    );
+    const userId = user.rows[0].id;
+    const ownerClient = await getOwnerPool().connect();
+    try {
+      await ownerClient.query('BEGIN');
+      await ownerClient.query("SELECT set_config('app.tenant_id', $1, true)", [orphanTenantId]);
+      await ownerClient.query(
+        `INSERT INTO audit_events (tenant_id, actor_user_id, action, target_type, target_id)
+         VALUES ($1, $2, 'failed-login', 'user', $2)`,
+        [orphanTenantId, userId]
+      );
+      await ownerClient.query('COMMIT');
+    } catch (err) {
+      await ownerClient.query('ROLLBACK');
+      throw err;
+    } finally {
+      ownerClient.release();
+    }
+
+    expect(await purgeAuditUser(userId)).toBeGreaterThan(0);
+    const leftover = await withTenant(orphanTenantId, (client) => client.query('SELECT 1 FROM audit_events'));
+    expect(leftover.rowCount).toBe(0);
   });
 });

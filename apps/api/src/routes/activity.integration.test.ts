@@ -569,11 +569,9 @@ describe('activity integration', () => {
     const tenantId = tenant.rows[0].id;
     await owner.query(`INSERT INTO audit_events (tenant_id, action) VALUES ($1, 'login')`, [tenantId]);
     await owner.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
-    const orphan = await owner.query(`SELECT 1 FROM audit_events WHERE tenant_id = $1`, [tenantId]);
-    expect(orphan.rowCount).toBe(1);
-    expect(await purgeAuditTenant(tenantId)).toBe(1);
     const purged = await owner.query(`SELECT 1 FROM audit_events WHERE tenant_id = $1`, [tenantId]);
     expect(purged.rowCount).toBe(0);
+    expect(await purgeAuditTenant(tenantId)).toBe(0);
 
     const user = await owner.query<{ id: string }>(
       `INSERT INTO users (email, name) VALUES ('erase.user@example.com', 'Erase User') RETURNING id`
