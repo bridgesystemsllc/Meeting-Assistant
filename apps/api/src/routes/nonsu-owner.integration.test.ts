@@ -6,6 +6,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import pg from 'pg';
 import { applyAuthEnv, startPostgresManagedOwner } from '../test/harness.js';
+import { purgeAuditTenant, purgeAuditUser, recordAudit } from '../lib/audit.js';
 import {
   APP_ROLE_GUARD_SQL,
   assertConnectedAppRole,
@@ -169,5 +170,103 @@ describe('non-superuser non-BYPASSRLS owner', () => {
       const rows = await client.query('SELECT id FROM meetings');
       expect(rows.rows.map((r) => r.id)).toEqual([ACME_MEETING]);
     });
+  });
+
+  it('purges tenant audit as the managed NOSUPERUSER NOBYPASSRLS owner', async () => {
+    await withTenant(ACME, async (client) => {
+      await recordAudit(client, {
+        actorUserId: ACME_OWNER,
+        action: 'login',
+        targetType: 'user',
+        targetId: ACME_OWNER,
+      });
+    });
+    expect(await purgeAuditTenant(ACME)).toBeGreaterThan(0);
+    await withTenant(ACME, async (client) => {
+      const left = await client.query('SELECT 1 FROM audit_events');
+      expect(left.rowCount).toBe(0);
+    });
+  });
+
+  it('erases user email hmac/masked as the managed owner', async () => {
+    const invitee = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('managed.erase@example.com', 'Managed Erase') RETURNING id`
+    );
+    const inviteeId = invitee.rows[0].id;
+    await withTenant(ACME, async (client) => {
+      await client.query(
+        `INSERT INTO memberships (tenant_id, user_id, role, seat_status)
+         VALUES ($1, $2, 'member', 'active')`,
+        [ACME, inviteeId]
+      );
+      await recordAudit(client, {
+        actorUserId: ACME_OWNER,
+        action: 'invite.sent',
+        targetType: 'invite',
+        email: 'managed.erase@example.com',
+      });
+      await recordAudit(client, {
+        actorUserId: inviteeId,
+        action: 'invite.accepted',
+        targetType: 'invite',
+        email: 'managed.erase@example.com',
+      });
+    });
+
+    expect(await purgeAuditUser(inviteeId)).toBeGreaterThan(0);
+
+    await withTenant(ACME, async (client) => {
+      const rows = await client.query<{ email_hmac: string | null; email_masked: string | null; actor_user_id: string | null; action: string }>(
+        `SELECT action, actor_user_id, email_hmac, email_masked
+           FROM audit_events
+          WHERE action IN ('invite.sent', 'invite.accepted')`
+      );
+      expect(rows.rowCount).toBe(2);
+      for (const row of rows.rows) {
+        expect(row.email_hmac).toBeNull();
+        expect(row.email_masked).toBeNull();
+      }
+    expect(rows.rows.find((row) => row.action === 'invite.sent')?.actor_user_id).toBe(ACME_OWNER);
+    expect(rows.rows.find((row) => row.action === 'invite.accepted')?.actor_user_id).toBeNull();
+    });
+  });
+
+  it('purges audit on tenant delete and still erases rows for a tenant_id with no tenants row', async () => {
+    const tenant = await ownerQuery<{ id: string }>(
+      `INSERT INTO tenants (name, slug) VALUES ('Purge Co', 'purge-co') RETURNING id`
+    );
+    const tenantId = tenant.rows[0].id;
+    await withTenant(tenantId, async (client) => {
+      await recordAudit(client, { action: 'login', targetType: 'tenant', targetId: tenantId });
+    });
+    await ownerQuery(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+    const gone = await withTenant(tenantId, (client) => client.query('SELECT 1 FROM audit_events'));
+    expect(gone.rowCount).toBe(0);
+
+    const orphanTenantId = 'aaaaaaaa-0000-0000-0000-000000000099';
+    const user = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('orphan.purge@example.com', 'Orphan Purge') RETURNING id`
+    );
+    const userId = user.rows[0].id;
+    const ownerClient = await getOwnerPool().connect();
+    try {
+      await ownerClient.query('BEGIN');
+      await ownerClient.query("SELECT set_config('app.tenant_id', $1, true)", [orphanTenantId]);
+      await ownerClient.query(
+        `INSERT INTO audit_events (tenant_id, actor_user_id, action, target_type, target_id)
+         VALUES ($1, $2, 'failed-login', 'user', $2)`,
+        [orphanTenantId, userId]
+      );
+      await ownerClient.query('COMMIT');
+    } catch (err) {
+      await ownerClient.query('ROLLBACK');
+      throw err;
+    } finally {
+      ownerClient.release();
+    }
+
+    expect(await purgeAuditUser(userId)).toBeGreaterThan(0);
+    const leftover = await withTenant(orphanTenantId, (client) => client.query('SELECT 1 FROM audit_events'));
+    expect(leftover.rowCount).toBe(0);
   });
 });

@@ -5,7 +5,14 @@ import { hashToken } from '../lib/crypto.js';
 import { HttpError, sendError } from '../lib/http-error.js';
 import { logger } from '../lib/logger.js';
 import { recordAudit } from '../lib/audit.js';
-import { resolveIdentity, consumeOidcState, lookupInvite, storeOidcState } from '../lib/auth-db.js';
+import {
+  resolveIdentity,
+  consumeOidcState,
+  lookupInvite,
+  storeOidcState,
+  type InviteLookup,
+} from '../lib/auth-db.js';
+import { db, withTenant } from '../lib/db.js';
 import {
   buildAuthorizationRequest,
   callbackUrlFromStored,
@@ -17,7 +24,7 @@ import {
   serializeClearedOidcStateCookie,
   serializeOidcStateCookie,
 } from '../lib/oidc-state-cookie.js';
-import { issueSession, readSessionToken, revokeSession } from '../lib/session.js';
+import { issueSession, loadSession, readSessionToken, revokeSession } from '../lib/session.js';
 
 export const authRouter = Router();
 
@@ -47,6 +54,25 @@ function appendCookies(res: Response, values: string | string[]): void {
   }
 }
 
+const FAILED_INVITE_LOOKUP_CODES = new Set(['INVITE_USED', 'INVITE_REVOKED', 'INVITE_EXPIRED']);
+
+async function recordFailedInviteLookup(found: InviteLookup): Promise<void> {
+  const tenantId = found.tenant?.id;
+  const code = found.code ?? 'INVALID_INVITE';
+  if (!tenantId || !FAILED_INVITE_LOOKUP_CODES.has(code)) {
+    return;
+  }
+  await withTenant(tenantId, (tx) =>
+    recordAudit(tx, {
+      action: 'failed-invite',
+      targetType: 'invite',
+      targetId: found.id ?? null,
+      email: found.email,
+      metadata: { code },
+    })
+  );
+}
+
 const INVITE_ERROR_QUERY: Record<string, string> = {
   INVALID_INVITE: 'invalid_invite',
   INVITE_USED: 'invite_used',
@@ -71,6 +97,7 @@ authRouter.get('/invites/:token', async (req, res, next) => {
     const slug = typeof req.query.tenant === 'string' ? req.query.tenant : null;
     const found = await lookupInvite(hashToken(token), slug);
     if (!found.ok) {
+      await recordFailedInviteLookup(found);
       const code = found.code ?? 'INVALID_INVITE';
       const messages: Record<string, string> = {
         INVALID_INVITE: 'That invite link is invalid.',
@@ -178,6 +205,23 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
         codeVerifier: stored.code_verifier || '',
       });
     } catch (err) {
+      if (stored.invite_token_hash) {
+        const preview = await lookupInvite(stored.invite_token_hash, null);
+        if (preview.tenant?.id) {
+          try {
+            await withTenant(preview.tenant.id, (tx) =>
+              recordAudit(tx, {
+                action: 'failed-login',
+                targetType: 'invite',
+                targetId: preview.id ?? null,
+                metadata: { code: err instanceof HttpError ? err.code : 'OIDC_FAILED' },
+              })
+            );
+          } catch (auditErr) {
+            logger.error({ err: auditErr }, 'failed-login audit failed');
+          }
+        }
+      }
       if (err instanceof HttpError) {
         sendError(res, err.statusCode, err.code, err.message);
         return;
@@ -185,14 +229,45 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       throw err;
     }
 
-    const resolved = await resolveIdentity({
-      issuer: claims.iss,
-      subject: claims.sub,
-      provider,
-      email: claims.email,
-      name: claims.name,
-      emailVerified: claims.emailVerified,
-      inviteTokenHash: stored.invite_token_hash,
+    const preview = stored.invite_token_hash ? await lookupInvite(stored.invite_token_hash, null) : null;
+    const resolved = await db.transaction(async (tx) => {
+      const result = await resolveIdentity(
+        {
+          issuer: claims.iss,
+          subject: claims.sub,
+          provider,
+          email: claims.email,
+          name: claims.name,
+          emailVerified: claims.emailVerified,
+          inviteTokenHash: stored.invite_token_hash,
+        },
+        tx
+      );
+      if (stored.invite_token_hash && result.invite) {
+        const tenantId = result.invite.tenant_id ?? preview?.tenant?.id ?? null;
+        if (tenantId) {
+          await tx.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+          if (result.invite.ok && result.user) {
+            await recordAudit(tx, {
+              actorUserId: result.user.id,
+              action: 'invite.accepted',
+              targetType: 'membership',
+              targetId: result.invite.membership_id ?? null,
+              email: result.user.email,
+            });
+          } else if (!result.invite.ok) {
+            await recordAudit(tx, {
+              actorUserId: result.user?.id ?? null,
+              action: 'failed-invite',
+              targetType: 'invite',
+              targetId: preview?.id ?? null,
+              email: claims.email,
+              metadata: { code: result.invite.code },
+            });
+          }
+        }
+      }
+      return result;
     });
 
     if (!resolved.ok || !resolved.user) {
@@ -228,21 +303,22 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
     const selected = active[0] ?? memberships[0];
 
     const previous = readSessionToken(req.cookies);
-    const session = await issueSession({
-      userId: resolved.user.id,
-      activeTenantId: selected.tenant.id,
-      previousToken: previous,
-    });
-
-    if (resolved.invite?.ok && resolved.invite.tenant_id) {
-      await recordAudit({
-        tenantId: resolved.invite.tenant_id,
-        actorUserId: resolved.user.id,
-        action: 'invite.accepted',
-        target: resolved.invite.membership_id ?? resolved.invite.tenant_id,
-        meta: { email: resolved.user.email },
+    const userId = resolved.user.id;
+    const session = await withTenant(selected.tenant.id, async (tx) => {
+      const issued = await issueSession({
+        userId,
+        activeTenantId: selected.tenant.id,
+        previousToken: previous,
+        client: tx,
       });
-    }
+      await recordAudit(tx, {
+        actorUserId: userId,
+        action: 'login',
+        targetType: 'user',
+        targetId: userId,
+      });
+      return issued;
+    });
 
     appendCookies(res, serializeClearedOidcStateCookie());
     appendCookies(res, session.setCookie);
@@ -253,7 +329,23 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
 });
 
 async function handleLogout(req: Request, res: Response, wantsJson: boolean): Promise<void> {
-  const cleared = await revokeSession(readSessionToken(req.cookies));
+  const token = readSessionToken(req.cookies);
+  const ctx = token ? await loadSession(token) : null;
+  const cleared = await revokeSession(token);
+  if (ctx?.user && ctx.active_tenant_id) {
+    try {
+      await withTenant(ctx.active_tenant_id, (tx) =>
+        recordAudit(tx, {
+          actorUserId: ctx.user.id,
+          action: 'logout',
+          targetType: 'user',
+          targetId: ctx.user.id,
+        })
+      );
+    } catch (err) {
+      logger.error({ err }, 'logout audit failed');
+    }
+  }
   appendCookies(res, serializeClearedOidcStateCookie());
   appendCookies(res, cleared);
   if (wantsJson) {

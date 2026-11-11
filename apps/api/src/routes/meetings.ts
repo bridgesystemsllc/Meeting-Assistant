@@ -15,10 +15,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { hasRequiredRole } from '@meeting-assistant/shared';
+import { recordAudit } from '../lib/audit.js';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { badRequest, forbidden, notFound, sendError, unauthenticated } from '../lib/http-error.js';
-import { recordAudit } from '../lib/audit.js';
 import { requireActiveSeat } from '../lib/seats.js';
 
 export const meetingsRouter = Router();
@@ -165,7 +165,9 @@ meetingsRouter.get('/:id', async (req, res) => {
 /**
  * DELETE /api/v1/meetings/:id
  * Cross-tenant → 404. Same-tenant member who is not admin/owner and not the
- * meeting owner → 403. Audit stub is P2-4's drop-in.
+ * meeting owner → 403. 204 and meeting.deleted only when DELETE rowCount is 1;
+ * concurrent authorized deletes yield one 204 and the rest 404. Audit and
+ * delete share the withTenant txn so an audit failure rolls the row back.
  */
 meetingsRouter.delete('/:id', async (req, res) => {
   const { id } = req.params;
@@ -183,7 +185,7 @@ meetingsRouter.delete('/:id', async (req, res) => {
   try {
     const deleted = await withTenant(tenantId, async (client) => {
       const existing = await client.query<{ id: string; user_id: string }>(
-        'SELECT id, user_id FROM meetings WHERE id = $1 AND tenant_id = $2',
+        'SELECT id, user_id FROM meetings WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
         [id, tenantId]
       );
       if (existing.rowCount === 0) {
@@ -201,6 +203,12 @@ meetingsRouter.delete('/:id', async (req, res) => {
       if (!removed.rowCount) {
         return 'missing' as const;
       }
+      await recordAudit(client, {
+        actorUserId: actor.user.id,
+        action: 'meeting.deleted',
+        targetType: 'meeting',
+        targetId: id,
+      });
       return 'deleted' as const;
     });
 
@@ -213,12 +221,6 @@ meetingsRouter.delete('/:id', async (req, res) => {
       return;
     }
 
-    await recordAudit({
-      tenantId,
-      actorUserId: actor.user.id,
-      action: 'meeting.delete',
-      target: id,
-    });
     res.status(204).send();
   } catch (err) {
     logger.error({ err, id }, 'Failed to delete meeting');

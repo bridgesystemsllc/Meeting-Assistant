@@ -12,6 +12,7 @@ import {
   purgeExpiredAuthRows,
   sessionContext,
   touchSession,
+  type AuthQueryClient,
   type AuthSessionContext,
 } from './auth-db.js';
 import type { MeResponse } from '@meeting-assistant/shared';
@@ -32,6 +33,7 @@ export async function issueSession(params: {
   userId: string;
   activeTenantId: string | null;
   previousToken?: string;
+  client?: AuthQueryClient;
 }): Promise<{ token: string; setCookie: string }> {
   if (params.previousToken) {
     await deleteSession(hashToken(params.previousToken)).catch(() => undefined);
@@ -49,6 +51,7 @@ export async function issueSession(params: {
     expiresAt: new Date(now + absoluteMs),
     idleExpiresAt: new Date(now + idleMs),
     activeTenantId: params.activeTenantId,
+    client: params.client,
   });
 
   return { token, setCookie: serializeSessionCookie(token) };

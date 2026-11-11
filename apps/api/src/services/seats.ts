@@ -231,7 +231,7 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
       tenantName: auth.tenant.name,
       acceptUrl: acceptUrl(token, auth.tenant.slug),
     });
-    await recordAudit({
+    await recordAudit(client, {
       tenantId: auth.tenant.id,
       actorUserId: auth.user.id,
       action: 'invite.sent',
@@ -326,7 +326,7 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
       tenantName: auth.tenant.name,
       acceptUrl: acceptUrl(token, auth.tenant.slug),
     });
-    await recordAudit({
+    await recordAudit(client, {
       tenantId: auth.tenant.id,
       actorUserId: auth.user.id,
       action: 'invite.resent',
@@ -343,6 +343,9 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
 }
 
 export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<SeatsResponse> {
+  // Repeating revoke after success returns 200 with no new audit row.
+  // Concurrent callers serialize on SELECT FOR UPDATE so exactly one
+  // state change and one audit row is recorded.
   return withTenant(auth.tenant.id, async (client) => {
     const found = await client.query<{
       id: string;
@@ -351,7 +354,7 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
       accepted_at: Date | null;
       revoked_at: Date | null;
     }>(
-      `SELECT id, email, role, accepted_at, revoked_at FROM invites WHERE id = $1 AND tenant_id = $2`,
+      `SELECT id, email, role, accepted_at, revoked_at FROM invites WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
       [inviteId, auth.tenant.id]
     );
     const invite = found.rows[0];
@@ -366,7 +369,7 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
         `UPDATE invites SET revoked_at = clock_timestamp() WHERE id = $1 AND tenant_id = $2`,
         [inviteId, auth.tenant.id]
       );
-      await recordAudit({
+      await recordAudit(client, {
         tenantId: auth.tenant.id,
         actorUserId: auth.user.id,
         action: 'invite.revoked',
@@ -379,6 +382,9 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
 }
 
 export async function deactivateMember(auth: MeResponse, membershipId: string): Promise<SeatsResponse> {
+  // Repeating deactivate after success returns 200 with no new audit row.
+  // Concurrent callers serialize on SELECT FOR UPDATE so exactly one
+  // state change and one audit row is recorded.
   return withTenant(auth.tenant.id, async (client) => {
     await snapshot(client, auth.tenant.id, true);
     const found = await client.query<{
@@ -414,7 +420,7 @@ export async function deactivateMember(auth: MeResponse, membershipId: string): 
         [membershipId, auth.tenant.id]
       );
       await revokeSessions(client, membership.user_id, auth.tenant.id);
-      await recordAudit({
+      await recordAudit(client, {
         tenantId: auth.tenant.id,
         actorUserId: auth.user.id,
         action: 'member.deactivated',
@@ -457,7 +463,7 @@ export async function reactivateMember(auth: MeResponse, membershipId: string): 
         `UPDATE memberships SET seat_status = 'active' WHERE id = $1 AND tenant_id = $2`,
         [membershipId, auth.tenant.id]
       );
-      await recordAudit({
+      await recordAudit(client, {
         tenantId: auth.tenant.id,
         actorUserId: auth.user.id,
         action: 'member.reactivated',

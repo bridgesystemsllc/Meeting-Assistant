@@ -3,6 +3,7 @@ import { hasRequiredRole, InviteRequestSchema } from '@meeting-assistant/shared'
 import { badRequest, parseUuidParam, sendError, unauthenticated } from '../lib/http-error.js';
 import { requireRole } from '../middleware/auth.js';
 import { requireActiveSeat } from '../lib/seats.js';
+import { listActivity, parseActivityQuery } from '../services/activity.js';
 import {
   deactivateMember,
   getSeats,
@@ -24,6 +25,23 @@ function requireUuid(res: Parameters<typeof badRequest>[0], value: string | stri
   }
   return id;
 }
+
+tenantRouter.get('/activity', requireRole('admin'), async (req, res, next) => {
+  try {
+    if (!req.auth) {
+      unauthenticated(res);
+      return;
+    }
+    const query = parseActivityQuery({
+      limit: req.query.limit,
+      cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+      action: typeof req.query.action === 'string' ? req.query.action : undefined,
+    });
+    res.json(await listActivity(req.auth, query));
+  } catch (err) {
+    next(err);
+  }
+});
 
 tenantRouter.get('/seats', async (req, res, next) => {
   try {

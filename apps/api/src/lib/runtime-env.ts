@@ -40,5 +40,8 @@ export function assertApiRuntimeEnv(): void {
     if (!process.env.SMTP_HOST) {
       throw new RuntimeConfigError('SMTP_HOST is required in production');
     }
+    if (!process.env.AUDIT_EMAIL_HMAC_KEY) {
+      throw new RuntimeConfigError('AUDIT_EMAIL_HMAC_KEY is required in production');
+    }
   }
 }

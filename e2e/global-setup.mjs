@@ -70,6 +70,7 @@ export default async function globalSetup() {
     MS_CLIENT_SECRET: 'test-ms-secret',
     MS_ISSUER: issuerUrl,
     LOG_LEVEL: 'silent',
+    AUDIT_EMAIL_HMAC_KEY: 'test-audit-email-hmac-key',
   };
 
   const child = spawn(process.execPath, ['--import', 'tsx', 'apps/api/src/index.ts'], {

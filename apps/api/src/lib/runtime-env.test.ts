@@ -39,4 +39,14 @@ describe('runtime env', () => {
     delete process.env.SMTP_HOST;
     expect(() => assertApiRuntimeEnv()).toThrow(/SMTP_HOST/);
   });
+
+  it('refuses to boot in production without AUDIT_EMAIL_HMAC_KEY', () => {
+    process.env.APP_DATABASE_URL = 'postgres://app@localhost/db';
+    process.env.PUBLIC_BASE_URL = 'https://api.example.com';
+    process.env.OIDC_STATE_SECRET = 'prod-oidc-state-secret';
+    process.env.SMTP_HOST = 'smtp.example.com';
+    process.env.NODE_ENV = 'production';
+    delete process.env.AUDIT_EMAIL_HMAC_KEY;
+    expect(() => assertApiRuntimeEnv()).toThrow(/AUDIT_EMAIL_HMAC_KEY/);
+  });
 });

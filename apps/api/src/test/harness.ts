@@ -195,4 +195,5 @@ export function applyAuthEnv(params: { ownerUrl: string; appUrl: string; issuerU
   process.env.MS_ISSUER = params.issuerUrl;
   process.env.OIDC_REDIRECT_BASE = '';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
+  process.env.AUDIT_EMAIL_HMAC_KEY = process.env.AUDIT_EMAIL_HMAC_KEY || 'test-audit-email-hmac-key';
 }
