@@ -6,12 +6,15 @@
 import { z } from 'zod';
 
 /**
- * Tenant entity (global table)
+ * Tenant entity (global table). plan_code is a label only — no prices.
  */
 export const TenantSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   slug: z.string(),
+  plan_code: z.string().default('pilot'),
+  seat_limit: z.number().int().min(1),
+  billing_status: z.enum(['pilot', 'active', 'past_due', 'canceled']).default('pilot'),
   created_at: z.date(),
   updated_at: z.date(),
 });
@@ -20,10 +23,11 @@ export type Tenant = z.infer<typeof TenantSchema>;
 
 /**
  * Tenant settings entity (tenant_id PK/FK)
+ * P2-5: transcript_retention_days (nullable, default 365) renamed from retention_days
  */
 export const TenantSettingsSchema = z.object({
   tenant_id: z.string().uuid(),
-  retention_days: z.number().default(365),
+  transcript_retention_days: z.number().int().nullable().default(365),
   created_at: z.date(),
   updated_at: z.date(),
 });
@@ -31,7 +35,7 @@ export const TenantSettingsSchema = z.object({
 export type TenantSettings = z.infer<typeof TenantSettingsSchema>;
 
 /**
- * User entity (global table - memberships come later)
+ * User entity (global table). Memberships live in `memberships`.
  */
 export const UserSchema = z.object({
   id: z.string().uuid(),
@@ -40,6 +44,38 @@ export const UserSchema = z.object({
   created_at: z.date(),
   updated_at: z.date(),
 });
+
+/**
+ * Membership entity (tenant-scoped; §5.5). No price columns.
+ */
+export const MembershipSchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  role: z.enum(['owner', 'admin', 'member']),
+  seat_status: z.enum(['invited', 'active', 'deactivated']),
+  created_at: z.date(),
+});
+
+export type Membership = z.infer<typeof MembershipSchema>;
+
+/**
+ * Invite token (single-use). Acceptance is OIDC then membership (ATLAS Q9).
+ * Creation/email send is P2-3; this row is the accept hook.
+ */
+export const InviteSchema = z.object({
+  id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  email: z.string().email(),
+  role: z.enum(['owner', 'admin', 'member']),
+  token_hash: z.string(),
+  expires_at: z.date(),
+  accepted_at: z.date().nullable(),
+  revoked_at: z.date().nullable(),
+  created_at: z.date(),
+});
+
+export type Invite = z.infer<typeof InviteSchema>;
 
 export type User = z.infer<typeof UserSchema>;
 
@@ -51,6 +87,9 @@ export const SessionSchema = z.object({
   user_id: z.string().uuid(),
   token_hash: z.string(),
   expires_at: z.date(),
+  idle_expires_at: z.date(),
+  last_seen_at: z.date(),
+  active_tenant_id: z.string().uuid().nullable(),
   created_at: z.date(),
 });
 
@@ -63,6 +102,9 @@ export const OidcLoginStateSchema = z.object({
   id: z.string().uuid(),
   state: z.string(),
   nonce: z.string(),
+  code_verifier: z.string().nullable(),
+  provider: z.enum(['google', 'microsoft']),
+  invite_token_hash: z.string().nullable(),
   redirect_uri: z.string().nullable(),
   expires_at: z.date(),
   created_at: z.date(),

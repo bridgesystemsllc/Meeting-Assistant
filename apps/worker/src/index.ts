@@ -29,7 +29,10 @@ export const meetingQueue = new Queue(QUEUE_NAME, {
 const worker = new Worker(
   QUEUE_NAME,
   async (job) => {
-    logger.info({ jobId: job.id, meetingId: job.data.meetingId }, 'Processing job');
+    logger.info(
+      { jobId: job.id, meetingId: job.data.meetingId, tenantId: job.data.tenantId },
+      'Processing job'
+    );
     return processMeeting(job);
   },
   {
@@ -69,21 +72,27 @@ process.on('SIGTERM', async () => {
 });
 
 /**
- * Add a meeting to the processing queue
+ * Add a meeting to the processing queue.
+ * tenantId is required so the worker can run under withTenant.
  */
 export async function queueMeetingProcessing(
   meetingId: string,
-  recallBotId: string
+  recallBotId: string,
+  tenantId: string
 ): Promise<string> {
-  // Use botId + event type as jobId for deduplication
-  const jobId = `${recallBotId}-processing`;
-  
+  if (!tenantId) {
+    throw new Error('TENANT_REQUIRED');
+  }
+
+  // Use meeting:${meetingId} as jobId for deduplication
+  const jobId = `meeting:${meetingId}`;
+
   const job = await meetingQueue.add(
     'process',
-    { meetingId, recallBotId },
+    { meetingId, recallBotId, tenantId },
     { jobId }
   );
-  
-  logger.info({ meetingId, jobId: job.id }, 'Meeting queued for processing');
+
+  logger.info({ meetingId, tenantId, jobId: job.id }, 'Meeting queued for processing');
   return job.id!;
 }
