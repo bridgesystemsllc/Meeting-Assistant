@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Job } from 'bullmq';
 
-// Mock dependencies
-vi.mock('../lib/db.js', () => ({
-  db: {
-    query: vi.fn(),
-  },
+const { query, runTenantJob } = vi.hoisted(() => ({
+  query: vi.fn(),
+  runTenantJob: vi.fn(),
+}));
+
+vi.mock('../lib/tenantJob.js', () => ({
+  runTenantJob,
 }));
 
 vi.mock('../lib/logger.js', () => ({
@@ -12,53 +15,65 @@ vi.mock('../lib/logger.js', () => ({
     info: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
-import { db } from '../lib/db.js';
 import { processMeeting, type ProcessMeetingData } from './process-meeting.js';
-import type { Job } from 'bullmq';
+
+const TENANT_A = '00000000-0000-0000-0000-000000000010';
+const MEETING_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+function job(data: Partial<ProcessMeetingData> = {}): Job<ProcessMeetingData> {
+  return {
+    data: {
+      meetingId: MEETING_ID,
+      recallBotId: 'bot-123',
+      tenantId: TENANT_A,
+      ...data,
+    },
+    updateProgress: vi.fn(),
+  } as unknown as Job<ProcessMeetingData>;
+}
 
 describe('processMeeting', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    query.mockResolvedValue({ rows: [], rowCount: 1 });
+    runTenantJob.mockImplementation(
+      async (_data: unknown, fn: (client: { query: typeof query }) => unknown) => fn({ query })
+    );
   });
 
-  it('updates meeting status to processing', async () => {
-    vi.mocked(db.query).mockResolvedValue({ rows: [], rowCount: 1 } as never);
+  it('updates meeting status to processing under the job tenant', async () => {
+    const result = await processMeeting(job());
 
-    const mockJob = {
-      data: {
-        meetingId: '123e4567-e89b-12d3-a456-426614174000',
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
-
-    const result = await processMeeting(mockJob);
-
-    expect(db.query).toHaveBeenCalledWith(
-      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-      ['processing', '123e4567-e89b-12d3-a456-426614174000']
+    expect(runTenantJob).toHaveBeenCalled();
+    expect(query).toHaveBeenCalledWith(
+      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+      ['processing', MEETING_ID, TENANT_A]
     );
     expect(result.success).toBe(true);
-    expect(result.meetingId).toBe('123e4567-e89b-12d3-a456-426614174000');
+    expect(result.meetingId).toBe(MEETING_ID);
+  });
+
+  it('fails when the meeting is not in the job tenant', async () => {
+    query.mockResolvedValue({ rows: [], rowCount: 0 });
+    await expect(processMeeting(job())).rejects.toThrow('MEETING_NOT_IN_TENANT');
+    expect(query).toHaveBeenCalledWith(
+      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+      ['processing', MEETING_ID, TENANT_A]
+    );
   });
 
   it('handles processing errors', async () => {
     const error = new Error('Database connection failed');
-    vi.mocked(db.query)
+    runTenantJob
       .mockRejectedValueOnce(error)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      .mockImplementationOnce(
+        async (_data: unknown, fn: (client: { query: typeof query }) => unknown) => fn({ query })
+      );
 
-    const mockJob = {
-      data: {
-        meetingId: '123e4567-e89b-12d3-a456-426614174000',
-        recallBotId: 'bot-123',
-      },
-      updateProgress: vi.fn(),
-    } as unknown as Job<ProcessMeetingData>;
-
-    await expect(processMeeting(mockJob)).rejects.toThrow('Database connection failed');
+    await expect(processMeeting(job())).rejects.toThrow('Database connection failed');
   });
 });

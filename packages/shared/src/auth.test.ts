@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { hasRequiredRole, MeResponseSchema, GLOBAL_TABLES } from './auth.js';
+import { hasRequiredRole, MeResponseSchema } from './auth.js';
+import { GLOBAL_TABLES } from './db-tables.js';
 
 describe('role matrix', () => {
   it('allows owner for every required role', () => {
@@ -32,6 +33,7 @@ describe('MeResponseSchema', () => {
       user: { id: '00000000-0000-0000-0000-000000000002', email: 'owner@example.com', name: 'Owner' },
       tenant: { id: '00000000-0000-0000-0000-000000000010', name: 'Acme Notes', slug: 'acme-notes' },
       role: 'owner',
+      seat_status: 'active',
       memberships: [
         {
           id: '00000000-0000-0000-0000-000000000020',

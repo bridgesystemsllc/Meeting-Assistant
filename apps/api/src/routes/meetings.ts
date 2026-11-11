@@ -1,15 +1,29 @@
 /**
- * Meetings API routes
- * Stub implementation for scaffold - full implementation in PR B
+ * Meetings API routes.
+ * Every handler runs DB work under withTenant(session tenant) and filters
+ * tenant_id in SQL (defense in depth with FORCE RLS).
+ * Cross-tenant ids return 404, never 403 (spec §5.7 / P0-3).
+ *
+ * FORGE Phase 1 POST /api/v1/meetings (Recall bot create) must keep this
+ * withTenant wrapping and must set tenant_id from the session, not the body.
+ *
+ * Seat check before bot dispatch (ATLAS Q11): `meetingsRouter.use(requireActiveSeat)`
+ * runs for every method, including a future POST. Call `assertActiveSeat(req.auth)`
+ * from `apps/api/src/lib/seats.ts` if Phase 1 (PR #3) registers POST elsewhere.
  */
 
 import { Router } from 'express';
 import { z } from 'zod';
+import { hasRequiredRole } from '@meeting-assistant/shared';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
-import { badRequest, notFound, sendError, unauthenticated } from '../lib/http-error.js';
+import { badRequest, forbidden, notFound, sendError, unauthenticated } from '../lib/http-error.js';
+import { recordAudit } from '../lib/audit.js';
+import { requireActiveSeat } from '../lib/seats.js';
 
 export const meetingsRouter = Router();
+
+meetingsRouter.use(requireActiveSeat);
 
 const UuidSchema = z.string().uuid();
 const MAX_LIMIT = 100;
@@ -43,17 +57,18 @@ meetingsRouter.get('/', async (req, res) => {
   try {
     const result = await withTenant(tenantId, (client) =>
       client.query(
-      `SELECT 
-         m.id, m.title, m.platform, m.status, m.started_at, m.ended_at,
-         m.duration_seconds, m.language, m.created_at,
-         ma.summary, ma.meeting_sentiment, ma.engagement_score,
-         COALESCE(jsonb_array_length(ma.action_items), 0) as action_item_count
-       FROM meetings m
-       LEFT JOIN meeting_analysis ma ON ma.meeting_id = m.id
-       WHERE m.tenant_id = $3
-       ORDER BY m.created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [page.limit, page.offset, tenantId]
+        `SELECT
+           m.id, m.title, m.platform, m.status, m.started_at, m.ended_at,
+           m.duration_seconds, m.language, m.created_at,
+           ma.summary, ma.meeting_sentiment, ma.engagement_score,
+           COALESCE(jsonb_array_length(ma.action_items), 0) as action_item_count
+         FROM meetings m
+         LEFT JOIN meeting_analysis ma
+           ON ma.meeting_id = m.id AND ma.tenant_id = m.tenant_id
+         WHERE m.tenant_id = $1
+         ORDER BY m.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [tenantId, page.limit, page.offset]
       )
     );
 
@@ -90,8 +105,14 @@ meetingsRouter.get('/:id', async (req, res) => {
         return null;
       }
       const [transcriptResult, analysisResult] = await Promise.all([
-        client.query('SELECT * FROM transcripts WHERE meeting_id = $1 AND tenant_id = $2', [id, tenantId]),
-        client.query('SELECT * FROM meeting_analysis WHERE meeting_id = $1 AND tenant_id = $2', [id, tenantId]),
+        client.query('SELECT * FROM transcripts WHERE meeting_id = $1 AND tenant_id = $2', [
+          id,
+          tenantId,
+        ]),
+        client.query('SELECT * FROM meeting_analysis WHERE meeting_id = $1 AND tenant_id = $2', [
+          id,
+          tenantId,
+        ]),
       ]);
       return {
         meeting: meetingResult.rows[0],
@@ -138,5 +159,69 @@ meetingsRouter.get('/:id', async (req, res) => {
   } catch (err) {
     logger.error({ err, id }, 'Failed to get meeting');
     sendError(res, 500, 'INTERNAL', 'Failed to fetch meeting');
+  }
+});
+
+/**
+ * DELETE /api/v1/meetings/:id
+ * Cross-tenant → 404. Same-tenant member who is not admin/owner and not the
+ * meeting owner → 403. Audit stub is P2-4's drop-in.
+ */
+meetingsRouter.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  const tenantId = req.auth?.tenant.id;
+  const actor = req.auth;
+  if (!tenantId || !actor) {
+    unauthenticated(res);
+    return;
+  }
+  if (!UuidSchema.safeParse(id).success) {
+    badRequest(res, 'INVALID_ID', 'Meeting id must be a UUID');
+    return;
+  }
+
+  try {
+    const deleted = await withTenant(tenantId, async (client) => {
+      const existing = await client.query<{ id: string; user_id: string }>(
+        'SELECT id, user_id FROM meetings WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
+      if (existing.rowCount === 0) {
+        return 'missing' as const;
+      }
+      const meetingOwner = existing.rows[0].user_id === actor.user.id;
+      const privileged = hasRequiredRole(actor.role, 'admin');
+      if (!privileged && !meetingOwner) {
+        return 'forbidden' as const;
+      }
+      const removed = await client.query('DELETE FROM meetings WHERE id = $1 AND tenant_id = $2', [
+        id,
+        tenantId,
+      ]);
+      if (!removed.rowCount) {
+        return 'missing' as const;
+      }
+      return 'deleted' as const;
+    });
+
+    if (deleted === 'missing') {
+      notFound(res, 'Meeting not found');
+      return;
+    }
+    if (deleted === 'forbidden') {
+      forbidden(res);
+      return;
+    }
+
+    await recordAudit({
+      tenantId,
+      actorUserId: actor.user.id,
+      action: 'meeting.delete',
+      target: id,
+    });
+    res.status(204).send();
+  } catch (err) {
+    logger.error({ err, id }, 'Failed to delete meeting');
+    sendError(res, 500, 'INTERNAL', 'Failed to delete meeting');
   }
 });

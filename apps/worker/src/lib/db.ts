@@ -1,5 +1,6 @@
 /**
  * PostgreSQL pool for the worker. Uses the NOBYPASSRLS app role only.
+ * All tenant-owned queries must run inside withTenant.
  */
 
 import pg from 'pg';
@@ -25,6 +26,42 @@ function getPool(): pg.Pool {
   return pool;
 }
 
+export function getAppPool(): pg.Pool {
+  return getPool();
+}
+
+export async function resetPools(): Promise<void> {
+  await pool?.end();
+  pool = undefined;
+}
+
+/**
+ * Run `fn` inside a transaction with `app.tenant_id` set locally.
+ * Transaction-scoped so pooled connections cannot leak a tenant.
+ */
+export async function withTenant<T>(
+  tenantId: string,
+  fn: (client: pg.PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export const db = {
   query: async <T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
@@ -43,6 +80,9 @@ export const db = {
   },
 
   getClient: async (): Promise<pg.PoolClient> => getPool().connect(),
+
+  getAppPool,
+  withTenant,
 
   transaction: async <T>(callback: (client: pg.PoolClient) => Promise<T>): Promise<T> => {
     const client = await getPool().connect();

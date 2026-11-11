@@ -82,6 +82,7 @@ export const MeResponseSchema = z.object({
   user: PublicUserSchema,
   tenant: PublicTenantSchema,
   role: RoleSchema,
+  seat_status: SeatStatusSchema,
   memberships: z.array(MembershipViewSchema),
 });
 export type MeResponse = z.infer<typeof MeResponseSchema>;
@@ -93,14 +94,3 @@ export const ApiErrorBodySchema = z.object({
   }),
 });
 export type ApiErrorBody = z.infer<typeof ApiErrorBodySchema>;
-
-/** Tables that must not carry tenant_id (ATLAS Q4). */
-export const GLOBAL_TABLES = [
-  'tenants',
-  'users',
-  'user_identities',
-  'webhook_events',
-  'sessions',
-  'oidc_login_state',
-] as const;
-export type GlobalTable = (typeof GLOBAL_TABLES)[number];

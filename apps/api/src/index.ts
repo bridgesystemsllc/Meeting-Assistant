@@ -6,11 +6,23 @@
 import 'dotenv/config';
 import { createApp } from './app.js';
 import { logger } from './lib/logger.js';
+import { assertConnectedAppRole } from './lib/app-role.js';
 import { assertApiRuntimeEnv } from './lib/runtime-env.js';
 import { purgeExpiredAuthRows } from './lib/auth-db.js';
+import { requireWebhookSecret } from './services/webhook-verify.js';
 
 if (process.env.NODE_ENV !== 'test') {
-  assertApiRuntimeEnv();
+  try {
+    assertApiRuntimeEnv();
+    if (process.env.NODE_ENV === 'production') {
+      requireWebhookSecret();
+    }
+    await assertConnectedAppRole();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  }
 }
 
 const app = createApp();
