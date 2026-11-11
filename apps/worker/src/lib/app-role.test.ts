@@ -10,6 +10,7 @@ function restricted(overrides: Partial<AppRoleGuardRow> = {}): AppRoleGuardRow {
     is_app_role: true,
     rolsuper: false,
     rolbypassrls: false,
+    rolreplication: false,
     owns_public_relation: false,
     owns_security_definer: false,
     has_role_membership: false,
@@ -82,6 +83,12 @@ describe('worker assertRestrictedAppRole', () => {
 
   it('refuses SUPERUSER even when the name is meeting_assistant_app', () => {
     expect(() => assertRestrictedAppRole(restricted({ rolsuper: true }))).toThrow(/NOSUPERUSER/);
+  });
+
+  it('refuses REPLICATION even when NOSUPERUSER NOBYPASSRLS', () => {
+    expect(() => assertRestrictedAppRole(restricted({ rolreplication: true }))).toThrow(
+      /NOREPLICATION/
+    );
   });
 
   it('refuses a table owner', () => {

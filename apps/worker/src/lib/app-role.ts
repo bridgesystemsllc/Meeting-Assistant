@@ -18,12 +18,12 @@ const TENANT_ISOLATION_SQL_LITERAL = TENANT_ISOLATION_EXPR.replaceAll("'", "''")
  * (session_user and current_user are meeting_assistant_app — not a member of
  * it, not a table owner, not SET ROLE onto a privileged role).
  *
- * That role must also be NOSUPERUSER NOBYPASSRLS, own no public relations or
- * SECURITY DEFINER functions, have no pg_auth_members rows, not be a member
- * of a table owner, not receive definer_access, and have only policies whose
- * USING and WITH CHECK equal the canonical tenant_isolation expression.
- * Public tables the app can DML must ENABLE RLS; those with tenant_id must
- * have a canonical tenant_isolation policy for the app role.
+ * That role must also be NOSUPERUSER NOBYPASSRLS NOREPLICATION, own no public
+ * relations or SECURITY DEFINER functions, have no pg_auth_members rows, not
+ * be a member of a table owner, not receive definer_access, and have only
+ * policies whose USING and WITH CHECK equal the canonical tenant_isolation
+ * expression. Public tables the app can DML must ENABLE RLS; those with
+ * tenant_id must have a canonical tenant_isolation policy for the app role.
  */
 export const APP_ROLE_GUARD_SQL = `
 SELECT
@@ -32,6 +32,7 @@ SELECT
   (session_user = '${REQUIRED_APP_ROLE}' AND current_user = '${REQUIRED_APP_ROLE}') AS is_app_role,
   r.rolsuper,
   r.rolbypassrls,
+  r.rolreplication,
   EXISTS (
     SELECT 1
     FROM pg_class c
@@ -153,6 +154,7 @@ export interface AppRoleGuardRow extends RoleAttrs {
   session_role: string;
   current_role: string;
   is_app_role: boolean;
+  rolreplication: boolean;
   owns_public_relation: boolean;
   owns_security_definer: boolean;
   has_role_membership: boolean;
@@ -192,6 +194,9 @@ export function assertRestrictedAppRole(
     );
   }
   assertNosuperuserNobypassrls(row, REQUIRED_APP_ROLE);
+  if (row.rolreplication) {
+    throw new WorkerConfigError(`${REQUIRED_APP_ROLE} must be NOREPLICATION`);
+  }
   if (row.owns_public_relation) {
     throw new WorkerConfigError(`${REQUIRED_APP_ROLE} must not own relations in public`);
   }

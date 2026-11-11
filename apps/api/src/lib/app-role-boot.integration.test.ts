@@ -171,6 +171,7 @@ describe('app role boot allow-list', () => {
     expect(appGuard.rows[0].current_role).toBe('meeting_assistant_app');
     expect(appGuard.rows[0].rolsuper).toBe(false);
     expect(appGuard.rows[0].rolbypassrls).toBe(false);
+    expect(appGuard.rows[0].rolreplication).toBe(false);
     expect(appGuard.rows[0].owns_public_relation).toBe(false);
     expect(appGuard.rows[0].owns_security_definer).toBe(false);
     expect(appGuard.rows[0].has_role_membership).toBe(false);
@@ -462,6 +463,23 @@ describe('app role boot allow-list', () => {
       await expectApiAndWorkerRefuse(appUrl);
     } finally {
       await getOwnerPool().query('DROP POLICY IF EXISTS sonar_or_empty ON meetings');
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses when meeting_assistant_app has REPLICATION', async () => {
+    const admin = new pg.Client({ connectionString: adminManagedUrl });
+    await admin.connect();
+    try {
+      await admin.query('ALTER ROLE meeting_assistant_app REPLICATION');
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].rolreplication).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/NOREPLICATION/);
+      await expect(assertConnectedAppRole()).rejects.toThrow(/NOREPLICATION/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await admin.query('ALTER ROLE meeting_assistant_app NOREPLICATION').catch(() => undefined);
+      await admin.end();
     }
     await assertConnectedAppRole();
   }, 40_000);
