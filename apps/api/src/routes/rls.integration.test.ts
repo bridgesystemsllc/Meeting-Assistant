@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
@@ -474,5 +475,40 @@ describe('RLS tenant isolation', () => {
     expect(stillAcme.rowCount).toBe(1);
     const lumenStill = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [LUMEN_MEETING]);
     expect(lumenStill.rowCount).toBe(1);
+  });
+
+  it('concurrent deletes of the same meeting yield one 204 and the rest 404', async () => {
+    const meetingId = randomUUID();
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'concurrent delete', 'zoom', 'https://zoom.us/j/9', 'completed')`,
+      [meetingId, ACME, ACME_OWNER]
+    );
+
+    process.env.PG_POOL_MAX = '8';
+    await resetPools();
+    try {
+      const [ownerCookie, adminCookie] = await Promise.all([
+        cookieFor(ACME_OWNER, ACME),
+        cookieFor(ACME_ADMIN, ACME),
+      ]);
+      const responses = await Promise.all([
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', ownerCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', adminCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', ownerCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', adminCookie),
+      ]);
+      const statuses = responses.map((r) => r.status).sort((a, b) => a - b);
+      expect(statuses).toEqual([204, 404, 404, 404]);
+      const notFoundBodies = responses.filter((r) => r.status === 404);
+      for (const res of notFoundBodies) {
+        expect(res.body.error.code).toBe('NOT_FOUND');
+      }
+      const gone = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [meetingId]);
+      expect(gone.rowCount).toBe(0);
+    } finally {
+      process.env.PG_POOL_MAX = '1';
+      await resetPools();
+    }
   });
 });

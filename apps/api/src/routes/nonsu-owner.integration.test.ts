@@ -1,12 +1,55 @@
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import pg from 'pg';
 import { applyAuthEnv, startPostgresManagedOwner } from '../test/harness.js';
-import { getOwnerPool, resetPools, withTenant } from '../lib/db.js';
+import {
+  APP_ROLE_GUARD_SQL,
+  assertConnectedAppRole,
+  assertRestrictedAppRole,
+  type AppRoleGuardRow,
+} from '../lib/app-role.js';
+import { getAppPool, getOwnerPool, resetPools, withTenant } from '../lib/db.js';
 import { issueSession } from '../lib/session.js';
 import { SESSION_COOKIE_NAME } from '../lib/session-cookie.js';
 import { lookupUserContact } from '../lib/tenant-lookup.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+function bootEntry(
+  entry: string,
+  extra: NodeJS.ProcessEnv
+): Promise<{ code: number | null; output: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', entry], {
+      cwd: repoRoot,
+      env: { ...process.env, ...extra },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout?.on('data', (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      output += String(chunk);
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`process did not exit. output=${output}`));
+    }, 20_000);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
 
 const ACME = '00000000-0000-0000-0000-000000000010';
 const ACME_OWNER = '00000000-0000-0000-0000-000000000011';
@@ -15,10 +58,14 @@ const ACME_MEETING = '10000000-0000-0000-0000-0000000000aa';
 describe('non-superuser non-BYPASSRLS owner', () => {
   let container: { stop: () => Promise<unknown> };
   let app: Express;
+  let ownerUrl: string;
+  let appUrl: string;
 
   beforeAll(async () => {
     const pgStack = await startPostgresManagedOwner();
     container = pgStack.container;
+    ownerUrl = pgStack.ownerUrl;
+    appUrl = pgStack.appUrl;
     applyAuthEnv({
       ownerUrl: pgStack.ownerUrl,
       appUrl: pgStack.appUrl,
@@ -50,6 +97,39 @@ describe('non-superuser non-BYPASSRLS owner', () => {
   async function ownerQuery<T extends pg.QueryResultRow>(text: string, params?: unknown[]) {
     return getOwnerPool().query<T>(text, params);
   }
+
+  it('refuses a NOSUPERUSER NOBYPASSRLS table owner as APP_DATABASE_URL and still boots the app role', async () => {
+    const ownerGuard = await getOwnerPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+    expect(ownerGuard.rows[0].rolsuper).toBe(false);
+    expect(ownerGuard.rows[0].rolbypassrls).toBe(false);
+    expect(ownerGuard.rows[0].is_app_role).toBe(false);
+    expect(ownerGuard.rows[0].owns_public_relation).toBe(true);
+    expect(ownerGuard.rows[0].has_nontenant_policy).toBe(true);
+    expect(() => assertRestrictedAppRole(ownerGuard.rows[0])).toThrow(/meeting_assistant_app/);
+
+    const appGuard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+    expect(appGuard.rows[0].is_app_role).toBe(true);
+    expect(appGuard.rows[0].owns_public_relation).toBe(false);
+    expect(appGuard.rows[0].has_nontenant_policy).toBe(false);
+    await assertConnectedAppRole();
+
+    const bootEnv = {
+      NODE_ENV: 'development',
+      APP_DATABASE_URL: ownerUrl,
+      DATABASE_URL: ownerUrl,
+      LOG_LEVEL: 'silent',
+      REDIS_URL: 'redis://127.0.0.1:1',
+    };
+    const api = await bootEntry(path.join(repoRoot, 'apps/api/src/index.ts'), bootEnv);
+    expect(api.code).toBe(1);
+    expect(api.output).toMatch(/meeting_assistant_app|owns relations|USING \(true\)/);
+
+    const worker = await bootEntry(path.join(repoRoot, 'apps/worker/src/index.ts'), bootEnv);
+    expect(worker.code).toBe(1);
+    expect(worker.output).toMatch(/meeting_assistant_app|owns relations|USING \(true\)/);
+
+    expect(process.env.APP_DATABASE_URL).toBe(appUrl);
+  }, 40_000);
 
   it('keeps FORCE RLS on tenant tables and lets SECURITY DEFINER lookups work', async () => {
     const meetings = await ownerQuery<{ force_rls: boolean }>(
