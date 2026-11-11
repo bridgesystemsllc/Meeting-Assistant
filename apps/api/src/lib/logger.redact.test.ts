@@ -24,7 +24,13 @@ describe('logger redaction', () => {
     );
 
     log.info({
-      req: { headers: { authorization: 'Bearer super-secret', cookie: 'ma_session=raw-token' } },
+      req: {
+        headers: {
+          authorization: 'Bearer super-secret',
+          cookie: 'ma_session=raw-token',
+          referer: 'https://mail.example.com/invite?token=plaintext-token',
+        },
+      },
       token: 'raw-session-token',
       token_hash: 'abc123',
       code_verifier: 'pkce-secret',
@@ -32,6 +38,7 @@ describe('logger redaction', () => {
       access_token: 'access-secret',
       clientSecret: 'oauth-secret',
       password: 'hunter2',
+      acceptUrl: 'http://localhost:5173/invite/raw-invite-token?tenant=acme-notes',
     }, 'auth debug');
 
     await new Promise((r) => setImmediate(r));
@@ -44,5 +51,9 @@ describe('logger redaction', () => {
     expect(out).not.toContain('oauth-secret');
     expect(out).not.toContain('hunter2');
     expect(out).not.toContain('eyJhbGciOiJub25lIn0');
+    expect(out).not.toContain('raw-invite-token');
+    expect(out).not.toContain('acceptUrl');
+    expect(out).not.toContain('mail.example.com');
+    expect(out).not.toContain('plaintext-token');
   });
 });

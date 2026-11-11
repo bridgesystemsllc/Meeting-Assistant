@@ -123,7 +123,7 @@ Fake company logos/stats in:
 
 ---
 
-### P0-8: No "[BRAND]" strings; no hardcoded owner name/email
+### P0-8: No [BRAND] strings; no hardcoded owner name/email
 
 **Status: REFUTED**
 
@@ -314,7 +314,7 @@ Schema: `data.data.sub_code` contains the denial reason
 
 ### Recommendations
 
-1. **Security:** Enable GitHub secret scanning and push protection (owner action)
-2. **Privacy:** Make repo private before adding any client data (owner action)
+1. **Security:** Enable GitHub secret scanning and push protection (Ahmad action)
+2. **Privacy:** Make repo private before adding any client data (Ahmad action)
 3. **Dependencies:** Run `npm audit fix` and upgrade next to 16.4.6+
 4. **History:** Consider history rewrite to remove [BRAND] strings (owner decision, destructive)

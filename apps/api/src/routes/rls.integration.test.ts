@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import pg from 'pg';
@@ -13,10 +14,13 @@ import {
   webhookEventExists,
   webhookInsertEvent,
 } from '../lib/tenant-lookup.js';
+import * as webhookVerify from '../services/webhook-verify.js';
 
 const ACME = '00000000-0000-0000-0000-000000000010';
 const LUMEN = '00000000-0000-0000-0000-000000000001';
 const ACME_OWNER = '00000000-0000-0000-0000-000000000011';
+const ACME_ADMIN = '00000000-0000-0000-0000-000000000012';
+const ACME_MEMBER = '00000000-0000-0000-0000-000000000013';
 const LUMEN_OWNER = '00000000-0000-0000-0000-000000000002';
 const ACME_MEETING = '10000000-0000-0000-0000-0000000000aa';
 const LUMEN_MEETING = '10000000-0000-0000-0000-0000000000bb';
@@ -113,6 +117,9 @@ describe('RLS tenant isolation', () => {
     for (const row of tables.rows) {
       if (isGlobalTable(row.table_name)) {
         expect(row.rls, `${row.table_name} should ENABLE RLS`).toBe(true);
+        expect(row.force_rls, `${row.table_name} global must FORCE RLS (004 definer policies)`).toBe(
+          true
+        );
         continue;
       }
       const col = await ownerQuery<{ is_nullable: string }>(
@@ -210,9 +217,18 @@ describe('RLS tenant isolation', () => {
     await expect(getAppPool().query('SELECT * FROM users')).rejects.toThrow();
     await expect(getAppPool().query('SELECT * FROM webhook_events')).rejects.toThrow();
     await expect(getAppPool().query('SELECT * FROM tenants')).rejects.toThrow();
+  });
 
-    const contact = await lookupUserContact(ACME_OWNER);
-    expect(contact?.email).toBe('owner@example.com');
+  it('lookup_user_contact is tenant-scoped', async () => {
+    const sameTenant = await lookupUserContact(ACME_OWNER, ACME);
+    expect(sameTenant).toEqual({ email: 'owner@example.com', name: 'Avery Owner' });
+    expect(sameTenant).not.toHaveProperty('id');
+
+    const crossTenant = await lookupUserContact(ACME_OWNER, LUMEN);
+    expect(crossTenant).toBeNull();
+
+    const noTenant = await lookupUserContact(ACME_OWNER);
+    expect(noTenant).toBeNull();
   });
 
   it('clears app.tenant_id on the pooled connection after commit', async () => {
@@ -270,7 +286,7 @@ describe('RLS tenant isolation', () => {
     expect(lumenStill.rowCount).toBe(1);
   });
 
-  it('resolves webhook tenant and rejects a claimed-tenant mismatch with 400', async () => {
+  it('resolves webhook tenant without leaking ids on mismatch', async () => {
     const ok = await resolveMeetingTenant({
       recallBotId: ACME_BOT,
       claimedTenantId: ACME,
@@ -282,9 +298,39 @@ describe('RLS tenant isolation', () => {
       recallBotId: ACME_BOT,
       claimedTenantId: LUMEN,
     });
-    expect(mismatch).toMatchObject({ ok: false, code: 'TENANT_MISMATCH' });
+    expect(mismatch).toEqual({ ok: false, code: 'NOT_FOUND' });
+    expect(mismatch).not.toHaveProperty('tenant_id');
+    expect(mismatch).not.toHaveProperty('meeting_id');
 
-    const res = await request(app)
+    const unclaimed = await resolveMeetingTenant({
+      recallBotId: ACME_BOT,
+      claimedMeetingId: ACME_MEETING,
+    });
+    expect(unclaimed).toEqual({ ok: false, code: 'NOT_FOUND' });
+    expect(unclaimed).not.toHaveProperty('tenant_id');
+    expect(unclaimed).not.toHaveProperty('meeting_id');
+
+    const missing = await resolveMeetingTenant({
+      recallBotId: 'bot-does-not-exist',
+      claimedTenantId: ACME,
+    });
+    expect(missing).toEqual(mismatch);
+  });
+
+  it('rejects unsigned webhooks with 400 BAD_SIGNATURE and writes nothing', async () => {
+    const before = await ownerQuery<{ n: string }>(
+      'SELECT count(*)::text AS n FROM webhook_events'
+    );
+    const unsigned = await request(app)
+      .post('/webhooks/recall')
+      .send({
+        event: 'bot.done',
+        data: { bot: { id: ACME_BOT, metadata: { tenant_id: ACME, meeting_id: ACME_MEETING } } },
+      });
+    expect(unsigned.status).toBe(400);
+    expect(unsigned.body.error.code).toBe('BAD_SIGNATURE');
+
+    const mismatchShape = await request(app)
       .post('/webhooks/recall')
       .send({
         event: 'bot.done',
@@ -295,8 +341,56 @@ describe('RLS tenant isolation', () => {
           },
         },
       });
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('TENANT_MISMATCH');
+    expect(mismatchShape.status).toBe(400);
+    expect(mismatchShape.body.error.code).toBe('BAD_SIGNATURE');
+
+    const after = await ownerQuery<{ n: string }>(
+      'SELECT count(*)::text AS n FROM webhook_events'
+    );
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+  });
+
+  it('after a valid signature, matching and mismatch both return 200 received', async () => {
+    process.env.RECALL_WEBHOOK_SECRET = 'whsec_test';
+    const spy = vi.spyOn(webhookVerify, 'createWebhookVerifier').mockReturnValue((_rawBody, headers) => {
+      const id = headers['svix-id'] || 'svix_test';
+      return { valid: true, id };
+    });
+
+    try {
+      const matching = await request(app)
+        .post('/webhooks/recall')
+        .set('svix-id', 'svix_test_1')
+        .set('svix-timestamp', '1')
+        .set('svix-signature', 'v1,test')
+        .send({
+          event: 'bot.done',
+          data: { bot: { id: ACME_BOT, metadata: { tenant_id: ACME, meeting_id: ACME_MEETING } } },
+        });
+      expect(matching.status).toBe(200);
+      expect(matching.body).toEqual({ received: true });
+      expect(await webhookEventExists(ACME_BOT, 'bot.done', 'svix_test_1')).toBe(true);
+
+      const mismatch = await request(app)
+        .post('/webhooks/recall')
+        .set('svix-id', 'svix_test_2')
+        .send({
+          event: 'bot.done',
+          data: {
+            bot: {
+              id: ACME_BOT,
+              metadata: { tenant_id: LUMEN, meeting_id: ACME_MEETING },
+            },
+          },
+        });
+      expect(mismatch.status).toBe(200);
+      expect(mismatch.body).toEqual({ received: true });
+      expect(mismatch.body.error).toBeUndefined();
+      expect(await webhookEventExists(ACME_BOT, 'bot.done', 'svix_test_2')).toBe(false);
+    } finally {
+      spy.mockRestore();
+      delete process.env.RECALL_WEBHOOK_SECRET;
+    }
   });
 
   it('records webhook events through SECURITY DEFINER, not direct table access', async () => {
@@ -305,13 +399,164 @@ describe('RLS tenant isolation', () => {
     const duplicate = await webhookInsertEvent(ACME_BOT, 'bot.done', 'evt-1', { event: 'bot.done' });
     expect(duplicate).toBe(false);
     expect(await webhookEventExists(ACME_BOT, 'bot.done', 'evt-1')).toBe(true);
+  });
 
-    const matching = await request(app)
-      .post('/webhooks/recall')
-      .send({
-        event: 'bot.done',
-        data: { bot: { id: ACME_BOT, metadata: { tenant_id: ACME, meeting_id: ACME_MEETING } } },
-      });
-    expect(matching.status).toBe(200);
+  it('rejects a same-tenant FK squat onto another tenant meeting', async () => {
+    await withTenant(ACME, async (client) => {
+      await expect(
+        client.query(
+          `INSERT INTO email_deliveries (tenant_id, meeting_id, recipient_email, status)
+           VALUES ($1, $2, 'attacker@example.com', 'pending')`,
+          [ACME, LUMEN_MEETING]
+        )
+      ).rejects.toThrow(/foreign key|violates/i);
+    });
+  });
+
+  it('enforces UNIQUE (tenant_id, id) on meetings', async () => {
+    const constraint = await ownerQuery<{ conname: string }>(
+      `SELECT c.conname
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid = c.conrelid
+        WHERE t.relname = 'meetings' AND c.contype = 'u'
+          AND pg_get_constraintdef(c.oid) ILIKE '%tenant_id%'`
+    );
+    expect(constraint.rowCount).toBeGreaterThan(0);
+  });
+
+  it('DELETE requires admin/owner or the meeting owner, and 404s cross-tenant', async () => {
+    const memberMeeting = '10000000-0000-0000-0000-0000000000cc';
+    const adminMeeting = '10000000-0000-0000-0000-0000000000dd';
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES
+         ($1, $2, $3, 'member owned', 'zoom', 'https://zoom.us/j/1', 'completed'),
+         ($4, $2, $5, 'admin target', 'zoom', 'https://zoom.us/j/2', 'completed')`,
+      [memberMeeting, ACME, ACME_MEMBER, adminMeeting, ACME_OWNER]
+    );
+
+    const memberCookie = await cookieFor(ACME_MEMBER, ACME);
+    const ownerCookie = await cookieFor(ACME_OWNER, ACME);
+    const adminCookie = await cookieFor(ACME_ADMIN, ACME);
+
+    const memberDenied = await request(app)
+      .delete(`/api/v1/meetings/${ACME_MEETING}`)
+      .set('Cookie', memberCookie);
+    expect(memberDenied.status).toBe(403);
+    expect(memberDenied.body.error.code).toBe('FORBIDDEN');
+
+    const memberOwn = await request(app)
+      .delete(`/api/v1/meetings/${memberMeeting}`)
+      .set('Cookie', memberCookie);
+    expect(memberOwn.status).toBe(204);
+
+    const ownerOwned = '10000000-0000-0000-0000-0000000000ee';
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'owner owned', 'zoom', 'https://zoom.us/j/3', 'completed')`,
+      [ownerOwned, ACME, ACME_OWNER]
+    );
+    const ownerOwn = await request(app)
+      .delete(`/api/v1/meetings/${ownerOwned}`)
+      .set('Cookie', ownerCookie);
+    expect(ownerOwn.status).toBe(204);
+
+    const adminDel = await request(app)
+      .delete(`/api/v1/meetings/${adminMeeting}`)
+      .set('Cookie', adminCookie);
+    expect(adminDel.status).toBe(204);
+
+    const ownerCross = await request(app)
+      .delete(`/api/v1/meetings/${LUMEN_MEETING}`)
+      .set('Cookie', ownerCookie);
+    expect(ownerCross.status).toBe(404);
+
+    const stillAcme = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [ACME_MEETING]);
+    expect(stillAcme.rowCount).toBe(1);
+    const lumenStill = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [LUMEN_MEETING]);
+    expect(lumenStill.rowCount).toBe(1);
+  });
+
+  it('concurrent deletes of the same meeting yield one 204, the rest 404, and one audit row', async () => {
+    const meetingId = randomUUID();
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'concurrent delete', 'zoom', 'https://zoom.us/j/9', 'completed')`,
+      [meetingId, ACME, ACME_OWNER]
+    );
+
+    process.env.PG_POOL_MAX = '8';
+    await resetPools();
+    try {
+      const [ownerCookie, adminCookie] = await Promise.all([
+        cookieFor(ACME_OWNER, ACME),
+        cookieFor(ACME_ADMIN, ACME),
+      ]);
+      const responses = await Promise.all([
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', ownerCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', adminCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', ownerCookie),
+        request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', adminCookie),
+      ]);
+      const statuses = responses.map((r) => r.status).sort((a, b) => a - b);
+      expect(statuses).toEqual([204, 404, 404, 404]);
+      const notFoundBodies = responses.filter((r) => r.status === 404);
+      for (const res of notFoundBodies) {
+        expect(res.body.error.code).toBe('NOT_FOUND');
+      }
+      const gone = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [meetingId]);
+      expect(gone.rowCount).toBe(0);
+      const audits = await ownerQuery(
+        `SELECT id FROM audit_events WHERE action = 'meeting.deleted' AND target_id = $1`,
+        [meetingId]
+      );
+      expect(audits.rowCount).toBe(1);
+    } finally {
+      process.env.PG_POOL_MAX = '1';
+      await resetPools();
+    }
+  });
+
+  it('rolls back the meeting row when meeting.deleted audit fails', async () => {
+    const meetingId = randomUUID();
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status)
+       VALUES ($1, $2, $3, 'audit rollback', 'zoom', 'https://zoom.us/j/8', 'completed')`,
+      [meetingId, ACME, ACME_OWNER]
+    );
+    await ownerQuery(`
+      CREATE OR REPLACE FUNCTION audit_fail_meeting_deleted()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.action = 'meeting.deleted' THEN
+          RAISE EXCEPTION 'forced meeting.deleted audit failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await ownerQuery(`
+      DROP TRIGGER IF EXISTS audit_fail_meeting_deleted ON audit_events;
+      CREATE TRIGGER audit_fail_meeting_deleted
+        BEFORE INSERT ON audit_events
+        FOR EACH ROW EXECUTE FUNCTION audit_fail_meeting_deleted()
+    `);
+    try {
+      const cookie = await cookieFor(ACME_OWNER, ACME);
+      const res = await request(app).delete(`/api/v1/meetings/${meetingId}`).set('Cookie', cookie);
+      expect(res.status).toBe(500);
+      const still = await ownerQuery('SELECT id FROM meetings WHERE id = $1', [meetingId]);
+      expect(still.rowCount).toBe(1);
+      const audits = await ownerQuery(
+        `SELECT id FROM audit_events WHERE action = 'meeting.deleted' AND target_id = $1`,
+        [meetingId]
+      );
+      expect(audits.rowCount).toBe(0);
+    } finally {
+      await ownerQuery('DROP TRIGGER IF EXISTS audit_fail_meeting_deleted ON audit_events');
+      await ownerQuery('DROP FUNCTION IF EXISTS audit_fail_meeting_deleted()');
+    }
   });
 });

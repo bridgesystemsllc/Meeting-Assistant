@@ -1,20 +1,17 @@
 /**
- * Webhook routes
- * P0-5: Svix-style signature verification. Invalid/unsigned webhooks get 400.
- * P1-2: Atomic dedupe via webhookInsertEvent (INSERT...ON CONFLICT RETURNING).
- * P1-3: Fail closed - never skip verification, require secret at startup.
- * P2-1: Persist event before acking; return non-2xx on failure.
- * P2-2: Require event ID header, reject when missing.
- * 
- * Integration with PR #6:
- *   - resolveMeetingTenant(...) → 400 TENANT_MISMATCH on claimed/stored mismatch
- *   - webhookInsertEvent / webhookMarkProcessed (not direct SELECT/INSERT)
- *   - withTenant(resolved.tenant_id, ...) for every meeting row touch
+ * Webhook routes.
+ *
+ * Signature verification is fail-closed. The bound verifier is
+ * (rawBody, headers) => WebhookVerificationResult; the secret is captured
+ * from requireWebhookSecret(). Default verifyWebhookSignature rejects every
+ * payload. FORGE Phase 1 (PR #3) replaces apps/api/src/services/webhook-verify.ts
+ * in place — same path, same exports.
+ *
+ * Verify runs before any DB access. After a valid signature the HTTP status
+ * is always 200 { received: true } (no TENANT_MISMATCH oracle).
  */
 
-import { Router, type Request, type Response } from 'express';
-import express from 'express';
-import { verifyWebhookSignature, requireWebhookSecret } from '../services/webhook-verify.js';
+import { Router, type Request } from 'express';
 import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { sendError } from '../lib/http-error.js';
@@ -25,9 +22,41 @@ import {
   webhookInsertEvent,
   webhookMarkProcessed,
 } from '../lib/tenant-lookup.js';
-import { queueMeetingProcessing } from '../lib/queue.js';
+import * as webhookVerify from '../services/webhook-verify.js';
+import type { WebhookVerifyHeaders } from '../services/webhook-verify.js';
 
 export const webhooksRouter = Router();
+
+function headerValue(req: Request, name: string): string | undefined {
+  const value = req.headers[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function webhookHeaders(req: Request): WebhookVerifyHeaders {
+  return {
+    'svix-id': headerValue(req, 'svix-id'),
+    'svix-timestamp': headerValue(req, 'svix-timestamp'),
+    'svix-signature': headerValue(req, 'svix-signature'),
+    'webhook-id': headerValue(req, 'webhook-id'),
+    'webhook-timestamp': headerValue(req, 'webhook-timestamp'),
+    'webhook-signature': headerValue(req, 'webhook-signature'),
+  };
+}
+
+function rawBody(req: Request): string {
+  if (Buffer.isBuffer(req.body)) return req.body.toString('utf8');
+  if (typeof req.body === 'string') return req.body;
+  if (req.body && typeof req.body === 'object') return JSON.stringify(req.body);
+  return '';
+}
+
+function parsePayload(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * P1-1: Mount express.raw BEFORE global JSON parser to capture raw body for signature verification.
@@ -52,83 +81,42 @@ webhooksRouter.use(
 
 /**
  * POST /webhooks/recall
- * Recall.ai webhook endpoint with Svix signature verification.
- * 
- * Flow:
- * 1. Verify signature (fail-closed, 400 on invalid)
- * 2. Extract and validate event ID header (required, P2-2)
- * 3. Resolve tenant (400 on mismatch)
- * 4. Atomic insert event (dedupe, skip if duplicate)
- * 5. Process event under withTenant
- * 6. Mark processed
- * 7. ACK with 200
+ * 1. Verify signature (fail closed).
+ * 2. Resolve tenant via SECURITY DEFINER.
+ * 3. withTenant for every meeting row touch.
  */
-webhooksRouter.post('/recall', async (req: Request & { rawBody?: string }, res: Response) => {
-  // P1-3: Fail closed - requireWebhookSecret throws at startup if not configured
-  const secret = requireWebhookSecret();
-
-  // Step 1: Verify signature (always, fail-closed)
-  const headers = {
-    'svix-id': req.headers['svix-id'] as string,
-    'svix-timestamp': req.headers['svix-timestamp'] as string,
-    'svix-signature': req.headers['svix-signature'] as string,
-    'webhook-id': req.headers['webhook-id'] as string,
-    'webhook-timestamp': req.headers['webhook-timestamp'] as string,
-    'webhook-signature': req.headers['webhook-signature'] as string,
-  };
-
-  const result = verifyWebhookSignature(req.rawBody || '', headers, secret);
-
-  if (!result.valid) {
-    logger.warn({ error: result.error }, 'Webhook signature verification failed');
-    return res.status(400).json({ error: result.error });
+webhooksRouter.post('/recall', async (req, res) => {
+  const raw = rawBody(req);
+  const verified = webhookVerify.createWebhookVerifier()(raw, webhookHeaders(req));
+  if (!verified.valid) {
+    sendError(res, 400, 'BAD_SIGNATURE', 'Invalid webhook signature');
+    return;
   }
 
-  // Step 2: P2-2 - Require event ID header, reject when missing
-  const eventId = headers['svix-id'] || headers['webhook-id'];
-  if (!eventId) {
-    logger.warn({}, 'Webhook missing event ID header');
-    return res.status(400).json({ error: 'Missing event ID header (svix-id or webhook-id)' });
-  }
+  const payload = parsePayload(raw);
+  const correlation = parseRecallWebhookCorrelation(payload);
+  const eventId =
+    verified.id ||
+    headerValue(req, 'svix-id') ||
+    headerValue(req, 'webhook-id') ||
+    `${correlation.recallBotId ?? 'unknown'}-${correlation.event ?? 'event'}`;
 
-  const correlation = parseRecallWebhookCorrelation(req.body);
-  const { recallBotId, event } = correlation;
+  if (correlation.recallBotId || correlation.claimedMeetingId) {
+    const resolved = await resolveMeetingTenant({
+      recallBotId: correlation.recallBotId,
+      claimedTenantId: correlation.claimedTenantId,
+      claimedMeetingId: correlation.claimedMeetingId,
+    });
 
-  if (!recallBotId) {
-    logger.warn({ event }, 'Webhook received without bot ID');
-    return res.status(400).json({ error: 'Missing bot ID in payload' });
-  }
-
-  if (!event) {
-    logger.warn({ botId: recallBotId }, 'Webhook received without event type');
-    return res.status(400).json({ error: 'Missing event type in payload' });
-  }
-
-  // Step 3: Resolve tenant
-  const resolved = await resolveMeetingTenant({
-    recallBotId: correlation.recallBotId,
-    claimedTenantId: correlation.claimedTenantId,
-    claimedMeetingId: correlation.claimedMeetingId,
-  });
-
-  if (!resolved.ok) {
-    if (resolved.code === 'TENANT_MISMATCH') {
-      logger.warn({ botId: recallBotId, event }, 'Webhook tenant mismatch');
-      sendError(res, 400, 'TENANT_MISMATCH', 'Webhook tenant does not match meeting');
-      return;
-    }
-    // NOT_FOUND is okay for some events (e.g., bot creation)
-    logger.debug({ botId: recallBotId, event }, 'Meeting not found for webhook');
-  }
-
-  try {
-    // Step 4: P1-2 Atomic insert (dedupe) - returns false if duplicate
-    const isNew = await webhookInsertEvent(
-      recallBotId,
-      event,
-      eventId,
-      req.body ?? {}
-    );
+    if (resolved.ok) {
+      if (correlation.recallBotId && correlation.event) {
+        await webhookInsertEvent(
+          correlation.recallBotId,
+          correlation.event,
+          eventId,
+          payload ?? {}
+        );
+      }
 
     if (!isNew) {
       // Duplicate event - skip processing but still ACK
@@ -141,24 +129,13 @@ webhooksRouter.post('/recall', async (req: Request & { rawBody?: string }, res: 
     // Step 5: Process event under tenant context
     if (resolved.ok) {
       await withTenant(resolved.tenant_id, async (client) => {
-        switch (event) {
-          case 'bot.status_change':
-            await handleStatusChange(client, req.body, resolved.meeting_id);
-            break;
-
-          case 'bot.recording_permission_denied':
-            await handleConsentDenied(client, resolved.meeting_id, recallBotId);
-            break;
-
-          case 'bot.done':
-          case 'bot.call_ended':
-            await handleCallEnded(client, resolved.meeting_id, recallBotId, resolved.tenant_id);
-            break;
-
-          default:
-            logger.debug({ event }, 'Unhandled webhook event type');
-        }
+        await client.query('SELECT id FROM meetings WHERE id = $1 AND tenant_id = $2', [
+          resolved.meeting_id,
+          resolved.tenant_id,
+        ]);
       });
+    } else {
+      logger.warn({ event: correlation.event }, 'Webhook meeting not resolved');
     }
 
     // Step 6: Mark as processed

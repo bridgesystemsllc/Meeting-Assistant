@@ -187,7 +187,7 @@ Universal-2 + all add-ons = $0.15 + $0.02 + $0.08 + $0.01 + $0.02 + $0.08 = **$0
 | **Total infrastructure** | ~$60/month |
 
 **Break-even at recommended tier ($0.75/hr):**
-- Per seat: depends on seat_limit and price (owner decision)
+- Per seat: depends on seat_limit and price (Ahmad decision)
 - Infrastructure is fixed regardless of meeting volume
 
 ---

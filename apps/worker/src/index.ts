@@ -8,6 +8,19 @@ import { Worker, Queue } from 'bullmq';
 import { redis } from './lib/redis.js';
 import { logger } from './lib/logger.js';
 import { processMeeting } from './jobs/process-meeting.js';
+import { assertConnectedAppRole } from './lib/app-role.js';
+import { assertWorkerRuntimeEnv } from './lib/env.js';
+
+if (process.env.NODE_ENV !== 'test') {
+  try {
+    assertWorkerRuntimeEnv();
+    await assertConnectedAppRole();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  }
+}
 
 const QUEUE_NAME = 'meeting-processing';
 

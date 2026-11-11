@@ -10,6 +10,10 @@ const isProduction = process.env.NODE_ENV === 'production';
 export const LOG_REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
+  'req.headers.referer',
+  'req.headers.referrer',
+  'referer',
+  'referrer',
   'res.headers["set-cookie"]',
   'cookie',
   'set-cookie',
@@ -35,6 +39,14 @@ export const LOG_REDACT_PATHS = [
   '*.refresh_token',
   '*.clientSecret',
   '*.client_secret',
+  'acceptUrl',
+  'accept_url',
+  '*.acceptUrl',
+  '*.accept_url',
+  'inviteToken',
+  'invite_token',
+  '*.inviteToken',
+  '*.invite_token',
 ];
 
 export const logger = pino({

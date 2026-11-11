@@ -23,6 +23,11 @@ describe('session cookie flags', () => {
     expect(options.sameSite).toBe('lax');
   });
 
+  it('keeps Secure in production even if COOKIE_SECURE=false', () => {
+    const options = sessionCookieOptions({ nodeEnv: 'production', cookieSecure: 'false' });
+    expect(options.secure).toBe(true);
+  });
+
   it('serializes the session cookie name', () => {
     const header = serializeSessionCookie('abc', { nodeEnv: 'production' });
     expect(header.startsWith(`${SESSION_COOKIE_NAME}=`)).toBe(true);

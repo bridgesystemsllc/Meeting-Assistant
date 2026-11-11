@@ -19,11 +19,13 @@ export function sessionCookieOptions(env: SessionCookieEnv = {}): SerializeOptio
   const nodeEnv = env.nodeEnv ?? process.env.NODE_ENV ?? 'development';
   const secureOverride = env.cookieSecure ?? process.env.COOKIE_SECURE;
   const secure =
-    secureOverride === 'true'
+    nodeEnv === 'production'
       ? true
-      : secureOverride === 'false'
-        ? false
-        : nodeEnv === 'production';
+      : secureOverride === 'true'
+        ? true
+        : secureOverride === 'false'
+          ? false
+          : false;
 
   const maxAge = env.absoluteTtlSeconds ?? Number(process.env.SESSION_ABSOLUTE_TTL_SECONDS ?? DEFAULT_ABSOLUTE_TTL_SECONDS);
 
