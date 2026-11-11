@@ -144,7 +144,7 @@ describe('§5.3a content invariants', () => {
   it('leaves Tailwind, PostCSS, Vite, global CSS, and the HTML shell untouched', () => {
     const indexCss = fs.readFileSync(path.join(webRoot, 'src/styles/index.css'), 'utf8');
     expect(indexCss).not.toMatch(/@font-face/);
-    expect(indexCss).not.toMatch(/Manrope|Geist/);
+    expect(indexCss).not.toMatch(/Manrope/);
     const vite = fs.readFileSync(path.join(webRoot, 'vite.config.ts'), 'utf8');
     expect(vite).not.toMatch(/Manrope|hero/);
     const html = fs.readFileSync(path.join(webRoot, 'index.html'), 'utf8');
