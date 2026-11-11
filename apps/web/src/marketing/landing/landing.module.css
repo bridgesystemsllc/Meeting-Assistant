@@ -1,0 +1,302 @@
+.page {
+  min-height: 100vh;
+  background: #f7f7f5;
+  color: #18181b;
+  font-family: var(--font-marketing, 'Manrope', ui-sans-serif, system-ui, sans-serif);
+}
+
+.section {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 88px 24px;
+}
+
+.hero {
+  text-align: center;
+  padding-top: 96px;
+}
+
+.kicker {
+  margin: 0 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5b4b8a;
+}
+
+.title {
+  margin: 0 0 20px;
+  font-size: clamp(36px, 5vw, 56px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: #18181b;
+}
+
+.lede {
+  margin: 0 auto 32px;
+  max-width: 640px;
+  font-size: 18px;
+  line-height: 1.6;
+  font-weight: 400;
+  color: #3f3f46;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.primary,
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 22px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.primary {
+  background: #3f2d78;
+  color: #fff;
+}
+
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: 2px solid #3f2d78;
+  outline-offset: 3px;
+}
+
+.secondary {
+  background: #fff;
+  color: #18181b;
+  border: 1px solid #d4d4d8;
+}
+
+.platforms {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  font-size: 13px;
+  color: #52525b;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.proof {
+  border-top: 1px solid #e4e4e7;
+  border-bottom: 1px solid #e4e4e7;
+  text-align: center;
+  color: #52525b;
+  font-size: 15px;
+}
+
+.featureRow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 32px;
+  align-items: center;
+  margin-bottom: 72px;
+}
+
+.featureCopy h2 {
+  margin: 0 0 12px;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.featureCopy p {
+  margin: 0 0 16px;
+  color: #3f3f46;
+  line-height: 1.6;
+}
+
+.featureCopy ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.featureCopy li {
+  padding: 6px 0 6px 14px;
+  position: relative;
+  color: #3f3f46;
+}
+
+.featureCopy li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 14px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5b4b8a;
+}
+
+.featureFrame {
+  border: 1px solid #e4e4e7;
+  background: #fff;
+  border-radius: 12px;
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5b4b8a;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.step {
+  background: #fff;
+  border: 1px solid #e4e4e7;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.step h3 {
+  margin: 12px 0 8px;
+  font-size: 18px;
+}
+
+.step p {
+  margin: 0;
+  color: #3f3f46;
+  line-height: 1.55;
+}
+
+.waitlist {
+  text-align: center;
+  background: #fff;
+  border-top: 1px solid #e4e4e7;
+}
+
+.waitlist h2 {
+  margin: 0 0 12px;
+  font-size: clamp(28px, 4vw, 40px);
+  letter-spacing: -0.02em;
+}
+
+.waitlist p {
+  margin: 0 auto 24px;
+  max-width: 520px;
+  color: #3f3f46;
+}
+
+.pricingHeader {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 24px 0;
+}
+
+.pricingHeader a {
+  color: #3f2d78;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.planGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.plan {
+  background: #fff;
+  border: 1px solid #e4e4e7;
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.plan p {
+  margin: 0;
+  color: #52525b;
+  font-size: 14px;
+}
+
+.plan ul {
+  margin: 12px 0 20px;
+  padding: 0;
+  list-style: none;
+  flex: 1;
+}
+
+.plan li {
+  padding: 6px 0;
+  font-size: 14px;
+  color: #3f3f46;
+}
+
+.faq {
+  margin-top: 56px;
+}
+
+.faq h2 {
+  font-size: 24px;
+}
+
+.faqItem {
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  background: #fff;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.faqItem button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 16px 18px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: #18181b;
+}
+
+.faqItem div {
+  padding: 0 18px 16px;
+  color: #3f3f46;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+@media (min-width: 768px) {
+  .featureRow {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .steps,
+  .planGrid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}

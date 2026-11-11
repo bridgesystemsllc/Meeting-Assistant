@@ -23,10 +23,11 @@ export type Tenant = z.infer<typeof TenantSchema>;
 
 /**
  * Tenant settings entity (tenant_id PK/FK)
+ * P2-5: transcript_retention_days (nullable, default 365) renamed from retention_days
  */
 export const TenantSettingsSchema = z.object({
   tenant_id: z.string().uuid(),
-  retention_days: z.number().default(365),
+  transcript_retention_days: z.number().int().nullable().default(365),
   created_at: z.date(),
   updated_at: z.date(),
 });
