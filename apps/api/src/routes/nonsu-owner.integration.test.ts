@@ -1,0 +1,272 @@
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import request from 'supertest';
+import type { Express } from 'express';
+import pg from 'pg';
+import { applyAuthEnv, startPostgresManagedOwner } from '../test/harness.js';
+import { purgeAuditTenant, purgeAuditUser, recordAudit } from '../lib/audit.js';
+import {
+  APP_ROLE_GUARD_SQL,
+  assertConnectedAppRole,
+  assertRestrictedAppRole,
+  type AppRoleGuardRow,
+} from '../lib/app-role.js';
+import { getAppPool, getOwnerPool, resetPools, withTenant } from '../lib/db.js';
+import { issueSession } from '../lib/session.js';
+import { SESSION_COOKIE_NAME } from '../lib/session-cookie.js';
+import { lookupUserContact } from '../lib/tenant-lookup.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+function bootEntry(
+  entry: string,
+  extra: NodeJS.ProcessEnv
+): Promise<{ code: number | null; output: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', entry], {
+      cwd: repoRoot,
+      env: { ...process.env, ...extra },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout?.on('data', (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr?.on('data', (chunk) => {
+      output += String(chunk);
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`process did not exit. output=${output}`));
+    }, 20_000);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
+
+const ACME = '00000000-0000-0000-0000-000000000010';
+const ACME_OWNER = '00000000-0000-0000-0000-000000000011';
+const ACME_MEETING = '10000000-0000-0000-0000-0000000000aa';
+
+describe('non-superuser non-BYPASSRLS owner', () => {
+  let container: { stop: () => Promise<unknown> };
+  let app: Express;
+  let ownerUrl: string;
+  let appUrl: string;
+
+  beforeAll(async () => {
+    const pgStack = await startPostgresManagedOwner();
+    container = pgStack.container;
+    ownerUrl = pgStack.ownerUrl;
+    appUrl = pgStack.appUrl;
+    applyAuthEnv({
+      ownerUrl: pgStack.ownerUrl,
+      appUrl: pgStack.appUrl,
+      issuerUrl: 'http://127.0.0.1:0/mock-oidc',
+    });
+    await resetPools();
+
+    const owner = await ownerQuery<{ rolsuper: boolean; rolbypassrls: boolean }>(
+      `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`
+    );
+    expect(owner.rows[0].rolsuper).toBe(false);
+    expect(owner.rows[0].rolbypassrls).toBe(false);
+
+    await ownerQuery(
+      `INSERT INTO meetings (id, tenant_id, user_id, title, platform, meeting_url, status, recall_bot_id)
+       VALUES ($1, $2, $3, 'Acme standup', 'meet', 'https://meet.google.com/aaa-bbbb-ccc', 'completed', 'bot-acme-notes-1')`,
+      [ACME_MEETING, ACME, ACME_OWNER]
+    );
+
+    const { createApp } = await import('../app.js');
+    app = createApp();
+  }, 120_000);
+
+  afterAll(async () => {
+    await resetPools();
+    await container.stop();
+  }, 60_000);
+
+  async function ownerQuery<T extends pg.QueryResultRow>(text: string, params?: unknown[]) {
+    return getOwnerPool().query<T>(text, params);
+  }
+
+  it('refuses a NOSUPERUSER NOBYPASSRLS table owner as APP_DATABASE_URL and still boots the app role', async () => {
+    const ownerGuard = await getOwnerPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+    expect(ownerGuard.rows[0].rolsuper).toBe(false);
+    expect(ownerGuard.rows[0].rolbypassrls).toBe(false);
+    expect(ownerGuard.rows[0].is_app_role).toBe(false);
+    expect(ownerGuard.rows[0].owns_public_relation).toBe(true);
+    expect(ownerGuard.rows[0].has_nontenant_policy).toBe(true);
+    expect(() => assertRestrictedAppRole(ownerGuard.rows[0])).toThrow(/meeting_assistant_app/);
+
+    const appGuard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+    expect(appGuard.rows[0].is_app_role).toBe(true);
+    expect(appGuard.rows[0].owns_public_relation).toBe(false);
+    expect(appGuard.rows[0].has_nontenant_policy).toBe(false);
+    await assertConnectedAppRole();
+
+    const bootEnv = {
+      NODE_ENV: 'development',
+      APP_DATABASE_URL: ownerUrl,
+      DATABASE_URL: ownerUrl,
+      LOG_LEVEL: 'silent',
+      REDIS_URL: 'redis://127.0.0.1:1',
+    };
+    const api = await bootEntry(path.join(repoRoot, 'apps/api/src/index.ts'), bootEnv);
+    expect(api.code).toBe(1);
+    expect(api.output).toMatch(/meeting_assistant_app|owns relations|USING \(true\)/);
+
+    const worker = await bootEntry(path.join(repoRoot, 'apps/worker/src/index.ts'), bootEnv);
+    expect(worker.code).toBe(1);
+    expect(worker.output).toMatch(/meeting_assistant_app|owns relations|USING \(true\)/);
+
+    expect(process.env.APP_DATABASE_URL).toBe(appUrl);
+  }, 40_000);
+
+  it('keeps FORCE RLS on tenant tables and lets SECURITY DEFINER lookups work', async () => {
+    const meetings = await ownerQuery<{ force_rls: boolean }>(
+      `SELECT c.relforcerowsecurity AS force_rls
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'meetings'`
+    );
+    expect(meetings.rows[0].force_rls).toBe(true);
+
+    const users = await ownerQuery<{ force_rls: boolean }>(
+      `SELECT c.relforcerowsecurity AS force_rls
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'users'`
+    );
+    expect(users.rows[0].force_rls).toBe(true);
+
+    const identities = await ownerQuery<{ force_rls: boolean }>(
+      `SELECT c.relforcerowsecurity AS force_rls
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = 'user_identities'`
+    );
+    expect(identities.rows[0].force_rls).toBe(true);
+
+    const contact = await lookupUserContact(ACME_OWNER, ACME);
+    expect(contact?.email).toBe('owner@example.com');
+  });
+
+  it('serves tenant-scoped meetings over the request path', async () => {
+    const { token } = await issueSession({ userId: ACME_OWNER, activeTenantId: ACME });
+    const res = await request(app)
+      .get('/api/v1/meetings')
+      .set('Cookie', `${SESSION_COOKIE_NAME}=${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.meetings.map((m: { id: string }) => m.id)).toEqual([ACME_MEETING]);
+
+    await withTenant(ACME, async (client) => {
+      const rows = await client.query('SELECT id FROM meetings');
+      expect(rows.rows.map((r) => r.id)).toEqual([ACME_MEETING]);
+    });
+  });
+
+  it('purges tenant audit as the managed NOSUPERUSER NOBYPASSRLS owner', async () => {
+    await withTenant(ACME, async (client) => {
+      await recordAudit(client, {
+        actorUserId: ACME_OWNER,
+        action: 'login',
+        targetType: 'user',
+        targetId: ACME_OWNER,
+      });
+    });
+    expect(await purgeAuditTenant(ACME)).toBeGreaterThan(0);
+    await withTenant(ACME, async (client) => {
+      const left = await client.query('SELECT 1 FROM audit_events');
+      expect(left.rowCount).toBe(0);
+    });
+  });
+
+  it('erases user email hmac/masked as the managed owner', async () => {
+    const invitee = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('managed.erase@example.com', 'Managed Erase') RETURNING id`
+    );
+    const inviteeId = invitee.rows[0].id;
+    await withTenant(ACME, async (client) => {
+      await client.query(
+        `INSERT INTO memberships (tenant_id, user_id, role, seat_status)
+         VALUES ($1, $2, 'member', 'active')`,
+        [ACME, inviteeId]
+      );
+      await recordAudit(client, {
+        actorUserId: ACME_OWNER,
+        action: 'invite.sent',
+        targetType: 'invite',
+        email: 'managed.erase@example.com',
+      });
+      await recordAudit(client, {
+        actorUserId: inviteeId,
+        action: 'invite.accepted',
+        targetType: 'invite',
+        email: 'managed.erase@example.com',
+      });
+    });
+
+    expect(await purgeAuditUser(inviteeId)).toBeGreaterThan(0);
+
+    await withTenant(ACME, async (client) => {
+      const rows = await client.query<{ email_hmac: string | null; email_masked: string | null; actor_user_id: string | null; action: string }>(
+        `SELECT action, actor_user_id, email_hmac, email_masked
+           FROM audit_events
+          WHERE action IN ('invite.sent', 'invite.accepted')`
+      );
+      expect(rows.rowCount).toBe(2);
+      for (const row of rows.rows) {
+        expect(row.email_hmac).toBeNull();
+        expect(row.email_masked).toBeNull();
+      }
+    expect(rows.rows.find((row) => row.action === 'invite.sent')?.actor_user_id).toBe(ACME_OWNER);
+    expect(rows.rows.find((row) => row.action === 'invite.accepted')?.actor_user_id).toBeNull();
+    });
+  });
+
+  it('purges audit on tenant delete and still erases rows for a tenant_id with no tenants row', async () => {
+    const tenant = await ownerQuery<{ id: string }>(
+      `INSERT INTO tenants (name, slug) VALUES ('Purge Co', 'purge-co') RETURNING id`
+    );
+    const tenantId = tenant.rows[0].id;
+    await withTenant(tenantId, async (client) => {
+      await recordAudit(client, { action: 'login', targetType: 'tenant', targetId: tenantId });
+    });
+    await ownerQuery(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+    const gone = await withTenant(tenantId, (client) => client.query('SELECT 1 FROM audit_events'));
+    expect(gone.rowCount).toBe(0);
+
+    const orphanTenantId = 'aaaaaaaa-0000-0000-0000-000000000099';
+    const user = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (email, name) VALUES ('orphan.purge@example.com', 'Orphan Purge') RETURNING id`
+    );
+    const userId = user.rows[0].id;
+    const ownerClient = await getOwnerPool().connect();
+    try {
+      await ownerClient.query('BEGIN');
+      await ownerClient.query("SELECT set_config('app.tenant_id', $1, true)", [orphanTenantId]);
+      await ownerClient.query(
+        `INSERT INTO audit_events (tenant_id, actor_user_id, action, target_type, target_id)
+         VALUES ($1, $2, 'failed-login', 'user', $2)`,
+        [orphanTenantId, userId]
+      );
+      await ownerClient.query('COMMIT');
+    } catch (err) {
+      await ownerClient.query('ROLLBACK');
+      throw err;
+    } finally {
+      ownerClient.release();
+    }
+
+    expect(await purgeAuditUser(userId)).toBeGreaterThan(0);
+    const leftover = await withTenant(orphanTenantId, (client) => client.query('SELECT 1 FROM audit_events'));
+    expect(leftover.rowCount).toBe(0);
+  });
+});

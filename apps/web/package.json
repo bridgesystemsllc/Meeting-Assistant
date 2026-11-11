@@ -13,7 +13,9 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "framer-motion": "^12.23.24",
+    "@fontsource/geist-mono": "^5.2.7",
+    "@fontsource/geist-sans": "^5.2.5",
+    "@meeting-assistant/shared": "*",
     "lucide-react": "^0.576.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

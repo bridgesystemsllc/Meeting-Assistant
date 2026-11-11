@@ -1,0 +1,4 @@
+# Historical test fixture only. Commit 3999ac1 used a high-entropy placeholder
+# in access-log.test.ts; later replaced with a low-entropy example token.
+# Not a live credential.
+3999ac1b2cb81f6c808e0453eb45891360938619:apps/api/src/lib/access-log.test.ts:generic-api-key:28

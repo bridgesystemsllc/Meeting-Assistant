@@ -27,9 +27,10 @@ Thumbs.db
 
 # Testing
 coverage/
-playwright-report/
+.playwright-stack.json
 test-results/
-**/e2e/screenshots/
+playwright-report/
+blob-report/
 
 # Turbo
 .turbo/

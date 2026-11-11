@@ -40,7 +40,7 @@ describe('MeetingAnalysisSchema', () => {
   });
 
   it('requires summary field', () => {
-    const { summary, ...withoutSummary } = validAnalysis;
+    const { summary: _summary, ...withoutSummary } = validAnalysis;
     const result = MeetingAnalysisSchema.safeParse(withoutSummary);
     expect(result.success).toBe(false);
   });
