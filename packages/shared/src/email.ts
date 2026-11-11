@@ -9,6 +9,8 @@ export interface EmailMessage {
   subject: string;
   text: string;
   html?: string;
+  /** Present on invite mail. Never logged; capturing transports may keep it in-memory for tests. */
+  acceptUrl?: string;
 }
 
 export interface EmailAdapter {

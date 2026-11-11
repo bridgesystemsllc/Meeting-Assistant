@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Loader2, AlertCircle, Calendar } from 'lucide-react';
 import { MeetingCard } from '../components/MeetingCard';
+import { SeatsFooter } from '../components/SeatsFooter';
+import { useAuth } from '../hooks/useAuth';
 import type { MeetingListItem } from '../lib/api';
 
 type LoadingState = 'idle' | 'loading' | 'success' | 'error';
@@ -9,6 +11,7 @@ type LoadingState = 'idle' | 'loading' | 'success' | 'error';
 const statusFilters = ['All', 'Completed', 'In Progress', 'Failed'] as const;
 
 export function MeetingsPage() {
+  const { me } = useAuth();
   const [meetings, setMeetings] = useState<MeetingListItem[]>([]);
   const [loadingState, setLoadingState] = useState<LoadingState>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +129,8 @@ export function MeetingsPage() {
           ))}
         </div>
       )}
+
+      {me?.seats && <SeatsFooter seatsUsed={me.seats.seats_used} seatLimit={me.seats.seat_limit} />}
     </div>
   );
 }

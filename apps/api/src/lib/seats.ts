@@ -1,13 +1,12 @@
 /**
  * Seat guard for authenticated requests.
  *
- * P2-3/#8 replaces this module with `requireActiveSeat` + `assertActiveSeat`
- * of the same names and error shape (`403 SEAT_INACTIVE`). Keep the export
- * names and `{ error: { code, message } }` body so that drop-in is clean.
- *
  * FORGE Phase 1 (PR #3) bot-dispatch: before creating a Recall bot on
  * POST /api/v1/meetings, call `assertActiveSeat(req.auth)`. This router
- * already runs `requireActiveSeat` for every meetings handler.
+ * already runs `requireActiveSeat` for every meetings handler, so a new
+ * POST on `meetingsRouter` inherits the check. If Phase 1 registers POST
+ * on a different router, invoke `assertActiveSeat` (or this middleware)
+ * before `createBot`.
  */
 
 import type { NextFunction, Request, Response } from 'express';

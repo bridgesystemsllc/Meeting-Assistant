@@ -37,5 +37,8 @@ export function assertApiRuntimeEnv(): void {
     if (process.env.OIDC_ALLOW_MOCK === 'true') {
       throw new RuntimeConfigError('OIDC_ALLOW_MOCK cannot be set when NODE_ENV=production');
     }
+    if (!process.env.SMTP_HOST) {
+      throw new RuntimeConfigError('SMTP_HOST is required in production');
+    }
   }
 }

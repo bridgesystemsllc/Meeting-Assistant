@@ -31,10 +31,17 @@ export const AuthErrorCodeSchema = z.enum([
   'INVALID_ISSUER',
   'INVALID_INVITE',
   'INVITE_EMAIL_MISMATCH',
+  'INVITE_USED',
+  'INVITE_EXPIRED',
+  'INVITE_REVOKED',
+  'INVITE_WRONG_TENANT',
   'EMAIL_UNVERIFIED',
   'OIDC_FAILED',
   'SEAT_INACTIVE',
   'SEAT_LIMIT_REACHED',
+  'LAST_OWNER',
+  'ALREADY_MEMBER',
+  'MEMBER_DEACTIVATED',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCodeSchema>;
 
@@ -84,6 +91,12 @@ export const MeResponseSchema = z.object({
   role: RoleSchema,
   seat_status: SeatStatusSchema,
   memberships: z.array(MembershipViewSchema),
+  seats: z
+    .object({
+      seat_limit: z.number().int().min(1),
+      seats_used: z.number().int().min(0),
+    })
+    .optional(),
 });
 export type MeResponse = z.infer<typeof MeResponseSchema>;
 

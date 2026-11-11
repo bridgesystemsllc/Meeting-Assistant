@@ -4,7 +4,8 @@ import { OidcProviderSchema } from '@meeting-assistant/shared';
 import { hashToken } from '../lib/crypto.js';
 import { HttpError, sendError } from '../lib/http-error.js';
 import { logger } from '../lib/logger.js';
-import { resolveIdentity, consumeOidcState, storeOidcState } from '../lib/auth-db.js';
+import { recordAudit } from '../lib/audit.js';
+import { resolveIdentity, consumeOidcState, lookupInvite, storeOidcState } from '../lib/auth-db.js';
 import {
   buildAuthorizationRequest,
   callbackUrlFromStored,
@@ -55,8 +56,42 @@ const INVITE_ERROR_QUERY: Record<string, string> = {
   INVITE_EMAIL_MISMATCH: 'invite_email',
   SEAT_LIMIT_REACHED: 'seat_limit',
   MEMBER_DEACTIVATED: 'member_deactivated',
+  ALREADY_MEMBER: 'already_member',
+  LAST_OWNER: 'last_owner',
   EMAIL_UNVERIFIED: 'unverified',
 };
+
+authRouter.get('/invites/:token', async (req, res, next) => {
+  try {
+    const token = req.params.token;
+    if (!token) {
+      sendError(res, 400, 'INVALID_INVITE', 'That invite link is invalid.');
+      return;
+    }
+    const slug = typeof req.query.tenant === 'string' ? req.query.tenant : null;
+    const found = await lookupInvite(hashToken(token), slug);
+    if (!found.ok) {
+      const code = found.code ?? 'INVALID_INVITE';
+      const messages: Record<string, string> = {
+        INVALID_INVITE: 'That invite link is invalid.',
+        INVITE_USED: 'That invite link has already been used.',
+        INVITE_EXPIRED: 'That invite link has expired.',
+        INVITE_REVOKED: 'That invite was revoked.',
+        INVITE_WRONG_TENANT: 'That invite belongs to a different workspace.',
+      };
+      sendError(res, 400, code, messages[code] ?? messages.INVALID_INVITE);
+      return;
+    }
+    res.json({
+      email: found.email,
+      role: found.role,
+      expires_at: found.expires_at,
+      tenant: found.tenant,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 authRouter.get('/login/:provider', async (req, res, next) => {
   try {
@@ -198,6 +233,17 @@ authRouter.get('/callback/:provider', async (req, res, next) => {
       activeTenantId: selected.tenant.id,
       previousToken: previous,
     });
+
+    if (resolved.invite?.ok && resolved.invite.tenant_id) {
+      await recordAudit({
+        tenantId: resolved.invite.tenant_id,
+        actorUserId: resolved.user.id,
+        action: 'invite.accepted',
+        target: resolved.invite.membership_id ?? resolved.invite.tenant_id,
+        meta: { email: resolved.user.email },
+      });
+    }
+
     appendCookies(res, serializeClearedOidcStateCookie());
     appendCookies(res, session.setCookie);
     res.redirect(`${frontendUrl()}/meetings`);

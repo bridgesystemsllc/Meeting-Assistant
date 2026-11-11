@@ -170,3 +170,21 @@ export async function acceptInvite(
   }>('SELECT auth_accept_invite($1,$2,$3) AS auth_accept_invite', [tokenHash, userId, email]);
   return result.rows[0].auth_accept_invite;
 }
+
+export interface InviteLookup {
+  ok: boolean;
+  code?: string;
+  id?: string;
+  email?: string;
+  role?: string;
+  expires_at?: string;
+  tenant?: { id: string; name: string; slug: string };
+}
+
+export async function lookupInvite(tokenHash: string, expectedSlug: string | null): Promise<InviteLookup> {
+  const result = await db.query<{ auth_lookup_invite: InviteLookup }>(
+    'SELECT auth_lookup_invite($1,$2) AS auth_lookup_invite',
+    [tokenHash, expectedSlug]
+  );
+  return result.rows[0].auth_lookup_invite;
+}

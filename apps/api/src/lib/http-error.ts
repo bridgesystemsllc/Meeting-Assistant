@@ -1,5 +1,8 @@
 import type { Response } from 'express';
+import { z } from 'zod';
 import type { AuthErrorCode } from '@meeting-assistant/shared';
+
+const UuidSchema = z.string().uuid();
 
 export class HttpError extends Error {
   constructor(
@@ -29,10 +32,7 @@ export function forbidden(res: Response, message = 'Insufficient role'): Respons
   return sendError(res, 403, 'FORBIDDEN' satisfies AuthErrorCode, message);
 }
 
-export function seatInactive(
-  res: Response,
-  message = 'Your seat is inactive. Ask your admin.'
-): Response {
+export function seatInactive(res: Response, message = 'Your seat is inactive. Ask your admin.'): Response {
   return sendError(res, 403, 'SEAT_INACTIVE' satisfies AuthErrorCode, message);
 }
 
@@ -42,4 +42,11 @@ export function notFound(res: Response, message = 'Not found'): Response {
 
 export function badRequest(res: Response, code: string, message: string): Response {
   return sendError(res, 400, code, message);
+}
+
+/** Single path param as a UUID, or null when missing/malformed. */
+export function parseUuidParam(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const parsed = UuidSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }

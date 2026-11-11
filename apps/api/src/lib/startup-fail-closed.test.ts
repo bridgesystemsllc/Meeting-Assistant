@@ -58,4 +58,17 @@ describe('API boot fail-closed', () => {
     expect(result.code).not.toBe(0);
     expect(result.output).toMatch(/OIDC_STATE_SECRET/);
   });
+
+  it('refuses to start in production without SMTP_HOST', async () => {
+    const result = await bootApi({
+      NODE_ENV: 'production',
+      APP_DATABASE_URL: 'postgres://app:secret@127.0.0.1:5432/meeting_assistant',
+      PUBLIC_BASE_URL: 'https://api.example.com',
+      OIDC_STATE_SECRET: 'prod-oidc-state-secret',
+      SMTP_HOST: '',
+      LOG_LEVEL: 'silent',
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.output).toMatch(/SMTP_HOST/);
+  });
 });
