@@ -177,6 +177,8 @@ describe('app role boot allow-list', () => {
     expect(appGuard.rows[0].member_of_table_owner).toBe(false);
     expect(appGuard.rows[0].has_definer_access).toBe(false);
     expect(appGuard.rows[0].has_nontenant_policy).toBe(false);
+    expect(appGuard.rows[0].has_dml_without_rls).toBe(false);
+    expect(appGuard.rows[0].has_dml_missing_tenant_isolation).toBe(false);
     await assertConnectedAppRole();
 
     const visible = await getAppPool().query('SELECT id FROM meetings');
@@ -463,4 +465,116 @@ describe('app role boot allow-list', () => {
     }
     await assertConnectedAppRole();
   }, 40_000);
+
+  it('refuses when a DML table has row security disabled', async () => {
+    await getOwnerPool().query('ALTER TABLE meetings DISABLE ROW LEVEL SECURITY');
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_dml_without_rls).toBe(true);
+      expect(guard.rows[0].has_dml_missing_tenant_isolation).toBe(false);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/row security disabled/);
+      await expect(assertConnectedAppRole()).rejects.toThrow(/row security disabled/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query(`
+        ALTER TABLE meetings ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE meetings FORCE ROW LEVEL SECURITY;
+      `);
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses when a DML table with tenant_id is missing tenant_isolation', async () => {
+    await getOwnerPool().query('DROP POLICY IF EXISTS tenant_isolation ON meetings');
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_dml_missing_tenant_isolation).toBe(true);
+      expect(guard.rows[0].has_nontenant_policy).toBe(false);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow(/canonical tenant_isolation/);
+      await expect(assertConnectedAppRole()).rejects.toThrow(/canonical tenant_isolation/);
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query(`
+        CREATE POLICY tenant_isolation ON meetings TO meeting_assistant_app
+          USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+      `);
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('refuses when tenant_isolation USING/WITH CHECK do not match exactly', async () => {
+    await getOwnerPool().query('DROP POLICY IF EXISTS tenant_isolation ON meetings');
+    await getOwnerPool().query(`
+      CREATE POLICY tenant_isolation ON meetings TO meeting_assistant_app
+        USING (true) WITH CHECK (true)
+    `);
+    try {
+      const guard = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(guard.rows[0].has_dml_missing_tenant_isolation).toBe(true);
+      expect(() => assertRestrictedAppRole(guard.rows[0])).toThrow();
+      await expectApiAndWorkerRefuse(appUrl);
+    } finally {
+      await getOwnerPool().query('DROP POLICY IF EXISTS tenant_isolation ON meetings');
+      await getOwnerPool().query(`
+        CREATE POLICY tenant_isolation ON meetings TO meeting_assistant_app
+          USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+      `);
+    }
+    await assertConnectedAppRole();
+  }, 40_000);
+
+  it('still boots with CREATEROLE, app as database owner, or a TRUNCATE grant', async () => {
+    const admin = new pg.Client({ connectionString: adminManagedUrl });
+    await admin.connect();
+    try {
+      await admin.query('ALTER ROLE meeting_assistant_app CREATEROLE');
+      await assertConnectedAppRole();
+      await admin.query('ALTER ROLE meeting_assistant_app NOCREATEROLE');
+
+      await admin.query('ALTER DATABASE ma_managed OWNER TO meeting_assistant_app');
+      await assertConnectedAppRole();
+      await admin.query('ALTER DATABASE ma_managed OWNER TO meeting_assistant_owner');
+    } finally {
+      await admin.query('ALTER ROLE meeting_assistant_app NOCREATEROLE').catch(() => undefined);
+      await admin
+        .query('ALTER DATABASE ma_managed OWNER TO meeting_assistant_owner')
+        .catch(() => undefined);
+      await admin.end();
+    }
+
+    await getOwnerPool().query('GRANT TRUNCATE ON meetings TO meeting_assistant_app');
+    try {
+      await assertConnectedAppRole();
+    } finally {
+      await getOwnerPool().query('REVOKE TRUNCATE ON meetings FROM meeting_assistant_app');
+    }
+    await assertConnectedAppRole();
+  });
+
+  it('still boots when a non-tenant DML table has RLS enabled', async () => {
+    await getOwnerPool().query(`
+      CREATE TABLE n6f_nontenant (id int);
+      GRANT SELECT, INSERT, UPDATE, DELETE ON n6f_nontenant TO meeting_assistant_app;
+    `);
+    try {
+      const withoutRls = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(withoutRls.rows[0].has_dml_without_rls).toBe(true);
+      expect(withoutRls.rows[0].has_dml_missing_tenant_isolation).toBe(false);
+      expect(() => assertRestrictedAppRole(withoutRls.rows[0])).toThrow(/row security disabled/);
+
+      await getOwnerPool().query(`
+        ALTER TABLE n6f_nontenant ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE n6f_nontenant FORCE ROW LEVEL SECURITY;
+      `);
+      const withRls = await getAppPool().query<AppRoleGuardRow>(APP_ROLE_GUARD_SQL);
+      expect(withRls.rows[0].has_dml_without_rls).toBe(false);
+      expect(withRls.rows[0].has_dml_missing_tenant_isolation).toBe(false);
+      await assertConnectedAppRole();
+    } finally {
+      await getOwnerPool().query('DROP TABLE IF EXISTS n6f_nontenant');
+    }
+    await assertConnectedAppRole();
+  });
 });

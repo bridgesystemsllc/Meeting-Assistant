@@ -16,6 +16,8 @@ function restricted(overrides: Partial<AppRoleGuardRow> = {}): AppRoleGuardRow {
     member_of_table_owner: false,
     has_definer_access: false,
     has_nontenant_policy: false,
+    has_dml_without_rls: false,
+    has_dml_missing_tenant_isolation: false,
     ...overrides,
   };
 }
@@ -116,5 +118,17 @@ describe('worker assertRestrictedAppRole', () => {
     expect(() => assertRestrictedAppRole(restricted({ has_nontenant_policy: true }))).toThrow(
       /tenant-scoped policies/
     );
+  });
+
+  it('refuses DML on a public table with row security disabled', () => {
+    expect(() => assertRestrictedAppRole(restricted({ has_dml_without_rls: true }))).toThrow(
+      /row security disabled/
+    );
+  });
+
+  it('refuses DML tables with tenant_id missing canonical tenant_isolation', () => {
+    expect(() =>
+      assertRestrictedAppRole(restricted({ has_dml_missing_tenant_isolation: true }))
+    ).toThrow(/canonical tenant_isolation/);
   });
 });
