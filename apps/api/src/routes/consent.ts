@@ -1,36 +1,41 @@
 /**
- * Consent Routes
- * API endpoints for consent settings and status
+ * Consent settings and meeting-status routes.
+ * Mounted at /api/v1/consent behind the existing v1 session auth guard.
+ * Every DB touch runs under withTenant(session tenant).
  */
 
-import { Router, Request, Response } from 'express';
-import pg from 'pg';
+import { Router } from 'express';
+import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import {
-  getConsentSettings,
-  validateBotName,
+  badRequest,
+  notFound,
+  parseUuidParam,
+  unauthenticated,
+} from '../lib/http-error.js';
+import { requireActiveSeat } from '../lib/seats.js';
+import {
   getBotDisplayName,
-  getPreJoinNotice,
+  getConsentSettings,
   getInCallNotice,
+  getPreJoinNotice,
   getStopKeywords,
+  validateBotName,
 } from '../services/consent.js';
 
-const router = Router();
+export const consentRouter = Router();
 
-/**
- * Get consent settings for current tenant
- * GET /api/consent/settings
- */
-router.get('/settings', async (req: Request, res: Response) => {
+consentRouter.use(requireActiveSeat);
+
+consentRouter.get('/settings', async (req, res, next) => {
   try {
-    const tenantId = req.headers['x-tenant-id'] as string;
+    const tenantId = req.auth?.tenant.id;
     if (!tenantId) {
-      return res.status(400).json({ error: 'Missing tenant ID' });
+      unauthenticated(res);
+      return;
     }
 
-    const pool = req.app.get('db') as pg.Pool;
-    const settings = await getConsentSettings(pool, tenantId);
-
+    const settings = await withTenant(tenantId, (client) => getConsentSettings(client, tenantId));
     res.json({
       botDisplayName: getBotDisplayName(settings),
       preJoinNotice: getPreJoinNotice(settings),
@@ -40,138 +45,148 @@ router.get('/settings', async (req: Request, res: Response) => {
     });
   } catch (err) {
     logger.error({ err }, 'Failed to get consent settings');
-    res.status(500).json({ error: 'Internal server error' });
+    next(err);
   }
 });
 
-/**
- * Update consent settings for current tenant
- * PUT /api/consent/settings
- */
-router.put('/settings', async (req: Request, res: Response) => {
+consentRouter.put('/settings', async (req, res, next) => {
   try {
-    const tenantId = req.headers['x-tenant-id'] as string;
+    const tenantId = req.auth?.tenant.id;
     if (!tenantId) {
-      return res.status(400).json({ error: 'Missing tenant ID' });
+      unauthenticated(res);
+      return;
     }
 
-    const { botDisplayName, preJoinNotice, inCallNotice, stopKeywords } = req.body;
+    const { botDisplayName, preJoinNotice, inCallNotice, stopKeywords } = req.body ?? {};
 
-    // Validate bot name if provided
     if (botDisplayName) {
+      if (typeof botDisplayName !== 'string') {
+        badRequest(res, 'VALIDATION_ERROR', 'botDisplayName must be a string');
+        return;
+      }
       const validation = validateBotName(botDisplayName);
       if (!validation.valid) {
-        return res.status(400).json({ error: validation.error });
+        badRequest(res, 'VALIDATION_ERROR', validation.error || 'Invalid bot name');
+        return;
       }
     }
 
-    // Validate stop keywords if provided
-    if (stopKeywords && !Array.isArray(stopKeywords)) {
-      return res.status(400).json({ error: 'stopKeywords must be an array' });
+    if (stopKeywords != null && !Array.isArray(stopKeywords)) {
+      badRequest(res, 'VALIDATION_ERROR', 'stopKeywords must be an array');
+      return;
+    }
+    if (Array.isArray(stopKeywords) && stopKeywords.some((k) => typeof k !== 'string')) {
+      badRequest(res, 'VALIDATION_ERROR', 'stopKeywords must be an array of strings');
+      return;
     }
 
-    const pool = req.app.get('db') as pg.Pool;
-
-    await pool.query(
-      `INSERT INTO tenant_settings (tenant_id, bot_display_name, pre_join_notice, in_call_notice, stop_keywords)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (tenant_id) 
-       DO UPDATE SET 
-         bot_display_name = COALESCE($2, tenant_settings.bot_display_name),
-         pre_join_notice = COALESCE($3, tenant_settings.pre_join_notice),
-         in_call_notice = COALESCE($4, tenant_settings.in_call_notice),
-         stop_keywords = COALESCE($5, tenant_settings.stop_keywords),
-         updated_at = NOW()`,
-      [tenantId, botDisplayName || null, preJoinNotice || null, inCallNotice || null, stopKeywords || null]
+    await withTenant(tenantId, (client) =>
+      client.query(
+        `INSERT INTO tenant_settings (tenant_id, bot_display_name, pre_join_notice, in_call_notice, stop_keywords)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (tenant_id)
+         DO UPDATE SET
+           bot_display_name = COALESCE($2, tenant_settings.bot_display_name),
+           pre_join_notice = COALESCE($3, tenant_settings.pre_join_notice),
+           in_call_notice = COALESCE($4, tenant_settings.in_call_notice),
+           stop_keywords = COALESCE($5, tenant_settings.stop_keywords),
+           updated_at = NOW()`,
+        [
+          tenantId,
+          typeof botDisplayName === 'string' && botDisplayName.length > 0 ? botDisplayName : null,
+          typeof preJoinNotice === 'string' ? preJoinNotice : null,
+          typeof inCallNotice === 'string' ? inCallNotice : null,
+          Array.isArray(stopKeywords) ? stopKeywords : null,
+        ]
+      )
     );
 
     logger.info({ tenantId }, 'Consent settings updated');
-
     res.json({ success: true });
   } catch (err) {
     logger.error({ err }, 'Failed to update consent settings');
-    res.status(500).json({ error: 'Internal server error' });
+    next(err);
   }
 });
 
-/**
- * Get consent status for a meeting
- * GET /api/consent/meeting/:meetingId
- */
-router.get('/meeting/:meetingId', async (req: Request, res: Response) => {
+consentRouter.get('/meetings/:meetingId', async (req, res, next) => {
   try {
-    const { meetingId } = req.params;
-    const tenantId = req.headers['x-tenant-id'] as string;
-
+    const tenantId = req.auth?.tenant.id;
     if (!tenantId) {
-      return res.status(400).json({ error: 'Missing tenant ID' });
+      unauthenticated(res);
+      return;
     }
 
-    const pool = req.app.get('db') as pg.Pool;
-
-    const result = await pool.query<{
-      consent_status: string;
-      consent_denied_at: Date | null;
-      consent_denied_reason: string | null;
-    }>(
-      `SELECT consent_status, consent_denied_at, consent_denied_reason
-       FROM meetings
-       WHERE id = $1 AND tenant_id = $2`,
-      [meetingId, tenantId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Meeting not found' });
+    const meetingId = parseUuidParam(req.params.meetingId);
+    if (!meetingId) {
+      badRequest(res, 'INVALID_ID', 'meetingId must be a UUID');
+      return;
     }
 
-    const meeting = result.rows[0];
+    const payload = await withTenant(tenantId, async (client) => {
+      const result = await client.query<{
+        consent_status: string;
+        consent_denied_at: Date | null;
+        consent_denied_reason: string | null;
+      }>(
+        `SELECT consent_status, consent_denied_at, consent_denied_reason
+         FROM meetings
+         WHERE id = $1 AND tenant_id = $2`,
+        [meetingId, tenantId]
+      );
+      if (result.rows.length === 0) return null;
 
-    // Get consent events for this meeting
-    const eventsResult = await pool.query<{
-      id: string;
-      event_type: string;
-      event_source: string | null;
-      actor_name: string | null;
-      created_at: Date;
-    }>(
-      `SELECT id, event_type, event_source, actor_name, created_at
-       FROM consent_events
-       WHERE meeting_id = $1 AND tenant_id = $2
-       ORDER BY created_at DESC`,
-      [meetingId, tenantId]
-    );
+      const meeting = result.rows[0];
+      const eventsResult = await client.query<{
+        id: string;
+        event_type: string;
+        event_source: string | null;
+        actor_name: string | null;
+        created_at: Date;
+      }>(
+        `SELECT id, event_type, event_source, actor_name, created_at
+         FROM consent_events
+         WHERE meeting_id = $1 AND tenant_id = $2
+         ORDER BY created_at DESC`,
+        [meetingId, tenantId]
+      );
 
-    res.json({
-      status: meeting.consent_status,
-      deniedAt: meeting.consent_denied_at,
-      deniedReason: meeting.consent_denied_reason,
-      events: eventsResult.rows.map(e => ({
-        id: e.id,
-        eventType: e.event_type,
-        eventSource: e.event_source,
-        actorName: e.actor_name,
-        createdAt: e.created_at,
-      })),
+      return {
+        status: meeting.consent_status,
+        deniedAt: meeting.consent_denied_at,
+        deniedReason: meeting.consent_denied_reason,
+        events: eventsResult.rows.map((event) => ({
+          id: event.id,
+          eventType: event.event_type,
+          eventSource: event.event_source,
+          actorName: event.actor_name,
+          createdAt: event.created_at,
+        })),
+      };
     });
+
+    if (!payload) {
+      notFound(res, 'Meeting not found');
+      return;
+    }
+    res.json(payload);
   } catch (err) {
     logger.error({ err }, 'Failed to get consent status');
-    res.status(500).json({ error: 'Internal server error' });
+    next(err);
   }
 });
 
-/**
- * Validate a proposed bot name
- * POST /api/consent/validate-bot-name
- */
-router.post('/validate-bot-name', (req: Request, res: Response) => {
-  const { botName } = req.body;
+consentRouter.post('/validate-bot-name', (req, res) => {
+  if (!req.auth?.tenant.id) {
+    unauthenticated(res);
+    return;
+  }
 
+  const { botName } = req.body ?? {};
   if (!botName || typeof botName !== 'string') {
-    return res.status(400).json({ error: 'botName is required' });
+    badRequest(res, 'VALIDATION_ERROR', 'botName is required');
+    return;
   }
 
-  const validation = validateBotName(botName);
-  res.json(validation);
+  res.json(validateBotName(botName));
 });
-
-export default router;
