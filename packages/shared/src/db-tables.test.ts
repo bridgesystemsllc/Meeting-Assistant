@@ -14,6 +14,10 @@ describe('GLOBAL_TABLES', () => {
     }
   });
 
+  it('includes consent_events in the tenant inventory', () => {
+    expect(TENANT_TABLES).toContain('consent_events');
+  });
+
   it('recognizes each exempt table', () => {
     for (const table of GLOBAL_TABLES) {
       expect(isGlobalTable(table)).toBe(true);
