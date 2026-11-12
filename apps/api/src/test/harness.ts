@@ -133,6 +133,40 @@ async function startExternalPostgres(adminUrl: string): Promise<PostgresStack> {
 }
 
 /**
+ * Fresh, empty database (app role bootstrapped, NO migrations applied) for
+ * upgrade-path tests. CI DATABASE_URL server when set, otherwise Testcontainers.
+ * ownerUrl is the superuser on that database.
+ */
+export async function startEmptyPostgres(): Promise<PostgresStack> {
+  const adminUrl = externalAdminUrl();
+  if (adminUrl) {
+    const database = `ma_upg_${process.pid}_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    await adminExec(adminUrl, `CREATE DATABASE ${database}`);
+    await bootstrapAppRole(adminUrl);
+    return {
+      container: {
+        stop: async () => {
+          try {
+            await adminExec(adminUrl, `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+          } catch {
+            // best effort; the CI service container is discarded after the job
+          }
+        },
+      },
+      ownerUrl: rewriteConnectionUrl(adminUrl, { database }),
+      appUrl: rewriteConnectionUrl(appConnectionUrl(adminUrl), { database }),
+    };
+  }
+
+  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const ownerUrl = container.getConnectionUri();
+  await bootstrapAppRole(ownerUrl);
+  return { container, ownerUrl, appUrl: appConnectionUrl(ownerUrl) };
+}
+
+/**
  * Start Postgres - uses the CI DATABASE_URL server if available (fresh
  * database per call), otherwise Testcontainers.
  */
