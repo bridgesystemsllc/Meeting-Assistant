@@ -47,7 +47,14 @@ vi.mock('../services/email.js', () => ({
 import { recallService } from '../services/recall.js';
 import { analyzeMeeting } from '../services/analysis.js';
 import { sendRecapEmail } from '../services/email.js';
-import { processMeeting, resetServices, type ProcessMeetingData } from './process-meeting.js';
+import { logger } from '../lib/logger.js';
+import {
+  processMeeting,
+  resetServices,
+  CLAIM_PROCESS_MEETING_SQL,
+  type ProcessMeetingData,
+} from './process-meeting.js';
+import { CLAIMABLE_MEETING_STATUSES } from '@meeting-assistant/shared';
 
 const TENANT_A = '00000000-0000-0000-0000-000000000010';
 const MEETING_ID = '123e4567-e89b-12d3-a456-426614174000';
@@ -235,10 +242,12 @@ describe('processMeeting', () => {
     expect(result.success).toBe(true);
     expect(recallService.deleteMedia).toHaveBeenCalled();
     // Verify the final status check happened
-    expect(query).toHaveBeenCalledWith(
-      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-      ['processing', MEETING_ID, TENANT_A]
-    );
+    expect(query).toHaveBeenCalledWith(CLAIM_PROCESS_MEETING_SQL, [
+      'processing',
+      MEETING_ID,
+      TENANT_A,
+      [...CLAIMABLE_MEETING_STATUSES],
+    ]);
   });
 
   it('records email as not_sent when SMTP is not configured (P2-3)', async () => {
@@ -280,10 +289,12 @@ describe('processMeeting', () => {
   it('fails when the meeting is not in the job tenant', async () => {
     query.mockResolvedValue({ rows: [], rowCount: 0 });
     await expect(processMeeting(mockJob())).rejects.toThrow('MEETING_NOT_IN_TENANT');
-    expect(query).toHaveBeenCalledWith(
-      'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-      ['processing', MEETING_ID, TENANT_A]
-    );
+    expect(query).toHaveBeenCalledWith(CLAIM_PROCESS_MEETING_SQL, [
+      'processing',
+      MEETING_ID,
+      TENANT_A,
+      [...CLAIMABLE_MEETING_STATUSES],
+    ]);
   });
 
   it('handles processing errors', async () => {
@@ -396,5 +407,74 @@ describe('processMeeting', () => {
     const calls = runTenantJob.mock.calls;
     // At least 6 calls: meeting fetch, transcript store, media_deleted_at update, analysis store, email record, final status
     expect(calls.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('does not process a meeting if consent is denied after the job is queued', async () => {
+    // Simulate: job already queued, then consent is denied, then the worker claims.
+    const deniedMeeting = {
+      ...MOCK_MEETING,
+      status: 'consent_denied',
+      consent_status: 'denied',
+    };
+    const current = { ...deniedMeeting };
+
+    query.mockImplementation(async (sql: string, _params?: unknown[]) => {
+      if (/SELECT\b/.test(sql) && /FROM meetings/.test(sql) && !/media_deleted_at/.test(sql.replace('media_deleted_at', ''))) {
+        // The claim-path SELECT includes status and consent_status.
+        if (/\bstatus\b/.test(sql) || /consent_status/.test(sql) || /FROM meetings/.test(sql)) {
+          return { rows: [{ ...current }], rowCount: 1 };
+        }
+      }
+      if (/UPDATE meetings SET status = \$1/.test(sql) && _params?.[0] === 'processing') {
+        const hasConsentPredicate =
+          /consent_denied/.test(sql) && /consent_status/.test(sql) && /ANY\(\$4/.test(sql);
+        const claimable =
+          current.status !== 'consent_denied' && current.consent_status !== 'denied';
+        if (hasConsentPredicate && !claimable) {
+          return { rows: [], rowCount: 0 };
+        }
+        current.status = 'processing';
+        return { rows: [], rowCount: 1 };
+      }
+      if (/UPDATE meetings SET status = \$1/.test(sql)) {
+        current.status = String(_params?.[0] ?? current.status);
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const job = mockJob();
+    const result = await processMeeting(job);
+
+    expect(result.success).toBe(false);
+    expect(result.dlq).toBeUndefined();
+    expect(recallService.getTranscript).not.toHaveBeenCalled();
+    expect(recallService.deleteMedia).not.toHaveBeenCalled();
+    expect(analyzeMeeting).not.toHaveBeenCalled();
+    expect(sendRecapEmail).not.toHaveBeenCalled();
+    expect(current.status).toBe('consent_denied');
+    expect(query).toHaveBeenCalledWith(CLAIM_PROCESS_MEETING_SQL, [
+      'processing',
+      MEETING_ID,
+      TENANT_A,
+      [...CLAIMABLE_MEETING_STATUSES],
+    ]);
+    // No later status write (failed / dlq / completed) after the refused claim.
+    const statusWrites = query.mock.calls.filter(
+      (call) =>
+        typeof call[0] === 'string' &&
+        /UPDATE meetings SET status = \$1/.test(call[0]) &&
+        call[1]?.[0] !== 'processing'
+    );
+    expect(statusWrites).toHaveLength(0);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        meetingId: MEETING_ID,
+        tenantId: TENANT_A,
+        status: 'consent_denied',
+        consentStatus: 'denied',
+      }),
+      expect.stringMatching(/not claimable/i)
+    );
   });
 });

@@ -8,17 +8,28 @@
  * 
  * Uses runTenantJob around every DB statement and requires tenantId on job payload.
  * Every statement also filters tenant_id in SQL (defense in depth with FORCE RLS).
- * A 0-row claim UPDATE is a failure (wrong tenant or missing meeting), not success.
+ * A 0-row claim UPDATE is a failure when the meeting is missing or in the wrong
+ * tenant. If the meeting exists but is not claimable (consent_denied or another
+ * terminal status), the job stops cleanly with no retry and no further work.
  * Uses lookupUserContact(userId, tenantId), not direct SELECT FROM users.
  */
 
 import type { Job } from 'bullmq';
 import type { PoolClient } from 'pg';
+import { CLAIMABLE_MEETING_STATUSES } from '@meeting-assistant/shared';
 import { logger } from '../lib/logger.js';
 import { runTenantJob, TenantJobError } from '../lib/tenantJob.js';
 import { lookupUserContact } from '../lib/user-lookup.js';
 
 export const MEETING_NOT_IN_TENANT = 'MEETING_NOT_IN_TENANT';
+
+/**
+ * Claim UPDATE: only a meeting in a claimable status, whose consent was
+ * not denied, can move to processing. A 0-row result must not be retried
+ * as a hard failure when the meeting exists but is not claimable.
+ */
+export const CLAIM_PROCESS_MEETING_SQL =
+  'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3 AND status = ANY($4::text[]) AND status <> \'consent_denied\' AND COALESCE(consent_status, \'\') <> \'denied\'';
 
 export interface ProcessMeetingData {
   meetingId: string;
@@ -103,8 +114,10 @@ export async function processMeeting(
         started_at: string | null;
         duration_seconds: number | null;
         media_deleted_at: Date | null;
+        status: string;
+        consent_status: string | null;
       }>(
-        `SELECT id, tenant_id, user_id, title, platform, started_at, duration_seconds, media_deleted_at 
+        `SELECT id, tenant_id, user_id, title, platform, started_at, duration_seconds, media_deleted_at, status, consent_status
          FROM meetings WHERE id = $1 AND tenant_id = $2`,
         [meetingId, tenantId]
       );
@@ -115,18 +128,36 @@ export async function processMeeting(
         throw new Error(`Tenant mismatch: job has ${tenantId}, meeting has ${row.tenant_id}`);
       }
 
-      const claimed = await client.query(
-        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-        ['processing', meetingId, tenantId]
-      );
+      const claimed = await client.query(CLAIM_PROCESS_MEETING_SQL, [
+        'processing',
+        meetingId,
+        tenantId,
+        [...CLAIMABLE_MEETING_STATUSES],
+      ]);
       if (!claimed.rowCount) {
-        throw new Error(MEETING_NOT_IN_TENANT);
+        if (!row) {
+          throw new Error(MEETING_NOT_IN_TENANT);
+        }
+        logger.info(
+          {
+            meetingId,
+            tenantId,
+            status: row.status,
+            consentStatus: row.consent_status,
+          },
+          'Skipping process-meeting; meeting is not claimable (consent denied or terminal status)'
+        );
+        return null;
       }
       if (!row) {
         throw new Error(`Meeting ${meetingId} not found`);
       }
       return row;
     });
+
+    if (!meeting) {
+      return { success: false, meetingId };
+    }
 
     await job.updateProgress(10);
 

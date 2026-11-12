@@ -157,32 +157,6 @@ async function cleanupRecallData(
 }
 
 /**
- * Check if a meeting should be processed based on consent status
- * Returns false if consent was denied (no processing should occur)
- */
-export async function shouldProcessMeeting(
-  db: DbClient,
-  meetingId: string
-): Promise<{ shouldProcess: boolean; reason?: string }> {
-  const result = await db.query<{ consent_status: string }>(
-    'SELECT consent_status FROM meetings WHERE id = $1',
-    [meetingId]
-  );
-  
-  if (result.rows.length === 0) {
-    return { shouldProcess: false, reason: 'Meeting not found' };
-  }
-  
-  const status = result.rows[0].consent_status;
-  
-  if (status === 'denied') {
-    return { shouldProcess: false, reason: 'Consent was denied' };
-  }
-  
-  return { shouldProcess: true };
-}
-
-/**
  * Handle a chat message that might contain a stop keyword
  * Called from webhook handler when chat messages are received
  */

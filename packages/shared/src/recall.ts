@@ -39,6 +39,33 @@ export const MEETING_STATUSES = [
 export type MeetingStatus = typeof MEETING_STATUSES[number];
 
 /**
+ * Statuses a process-meeting job may claim. Terminal states
+ * (consent_denied, completed, media_pending, dlq) are excluded.
+ * 'joining' and 'in_call' appear in product writes but not MEETING_STATUSES.
+ */
+export const CLAIMABLE_MEETING_STATUSES = [
+  'scheduled',
+  'bot_joining',
+  'joining',
+  'recording',
+  'in_call',
+  'processing',
+  'failed',
+] as const;
+
+export type ClaimableMeetingStatus = (typeof CLAIMABLE_MEETING_STATUSES)[number];
+
+export function isMeetingClaimableForProcessing(
+  status: string,
+  consentStatus?: string | null
+): boolean {
+  return (
+    (CLAIMABLE_MEETING_STATUSES as readonly string[]).includes(status) &&
+    consentStatus !== 'denied'
+  );
+}
+
+/**
  * Supported meeting platforms
  */
 export const MEETING_PLATFORMS = ['zoom', 'google_meet', 'teams', 'webex'] as const;
