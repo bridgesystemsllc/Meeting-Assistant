@@ -21,7 +21,7 @@ const MOCK_MEETINGS = [
     ],
     key_decisions: [
       { decision: "Prioritize enterprise tier over SMB for Q2", owner: "Leadership" },
-      { decision: "Allocate $50K for LATAM pilot campaign", owner: "Finance" },
+      { decision: "Allocate budget for LATAM pilot campaign", owner: "Finance" },
     ],
     speakers: [
       { id: "A", name: "Alex", talk_time_pct: 38 },

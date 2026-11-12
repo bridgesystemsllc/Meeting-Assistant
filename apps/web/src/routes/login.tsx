@@ -5,6 +5,7 @@ import { loginUrl } from '../lib/auth';
 
 const ERROR_COPY: Record<string, string> = {
   no_access: 'No access: ask your admin.',
+  seat_inactive: 'This seat is inactive. Ask your admin.',
   invalid_state: 'Sign-in expired. Try again.',
   invalid_invite: 'That invite link is invalid or has already been used.',
   invite_used: 'That invite link has already been used.',
@@ -12,6 +13,11 @@ const ERROR_COPY: Record<string, string> = {
   invite_revoked: 'That invite was revoked.',
   invite_tenant: 'That invite belongs to a different workspace.',
   invite_email: 'That invite was issued to a different email.',
+  seat_limit: 'All seats are in use. Ask your admin.',
+  member_deactivated: 'This seat is deactivated. Ask your admin to reactivate it.',
+  already_member: 'This person already has a seat.',
+  last_owner: 'The last active owner cannot be changed this way.',
+  unverified: 'That email is not verified with the identity provider.',
   oidc: 'Sign-in failed. Try again.',
 };
 
@@ -30,32 +36,35 @@ export function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[var(--color-bg)] px-4">
-      <section className="w-full max-w-sm rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
-        <h1 className="text-lg font-semibold text-[var(--color-fg)]">[PRODUCT NAME]</h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">Sign in to continue. Accounts are invite-only.</p>
+    <>
+      <meta name="referrer" content="no-referrer" />
+      <main className="flex min-h-screen items-center justify-center bg-[var(--color-bg)] px-4">
+        <section className="w-full max-w-sm rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
+          <h1 className="text-lg font-semibold text-[var(--color-fg)]">[PRODUCT NAME]</h1>
+          <p className="mt-1 text-sm text-[var(--color-muted)]">Sign in to continue. Accounts are invite-only.</p>
 
-        {error && (
-          <p role="alert" className="mt-4 rounded-md border border-[var(--color-danger)]/30 bg-red-50 px-3 py-2 text-sm text-[var(--color-danger)]">
-            {error}
-          </p>
-        )}
+          {error && (
+            <p role="alert" className="mt-4 rounded-md border border-[var(--color-danger)]/30 bg-red-50 px-3 py-2 text-sm text-[var(--color-danger)]">
+              {error}
+            </p>
+          )}
 
-        <div className="mt-6 flex flex-col gap-2">
-          <a
-            href={googleHref}
-            className="inline-flex h-10 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-sm font-medium text-[var(--color-fg)] hover:bg-[var(--color-bg)]"
-          >
-            Continue with Google
-          </a>
-          <a
-            href={microsoftHref}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-[var(--color-fg)] text-sm font-medium text-[var(--color-surface)] hover:opacity-90"
-          >
-            Continue with Microsoft
-          </a>
-        </div>
-      </section>
-    </main>
+          <div className="mt-6 flex flex-col gap-2">
+            <a
+              href={googleHref}
+              className="inline-flex h-10 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-sm font-medium text-[var(--color-fg)] hover:bg-[var(--color-bg)]"
+            >
+              Continue with Google
+            </a>
+            <a
+              href={microsoftHref}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-[var(--color-fg)] text-sm font-medium text-[var(--color-surface)] hover:opacity-90"
+            >
+              Continue with Microsoft
+            </a>
+          </div>
+        </section>
+      </main>
+    </>
   );
 }

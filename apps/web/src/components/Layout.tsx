@@ -3,9 +3,10 @@ import { Calendar, LayoutDashboard, Settings } from 'lucide-react';
 import { hasRequiredRole } from '@meeting-assistant/shared';
 import { UserMenu } from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
+import '../styles/font-tokens.css';
 
 const navItems = [
-  { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/meetings', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/meetings', label: 'Meetings', icon: Calendar },
 ];
 
@@ -16,7 +17,10 @@ export function Layout() {
   const seatInactive = me != null && me.seat_status !== 'active';
 
   return (
-    <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-fg)]">
+    <div
+      className="min-h-screen bg-[var(--color-bg)] text-[var(--color-fg)]"
+      style={{ fontFamily: 'var(--font-app)' }}
+    >
       <aside className="fixed left-0 top-0 flex h-full w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] p-4">
         <div className="mb-8">
           <h1 className="text-base font-semibold tracking-tight">[PRODUCT NAME]</h1>
@@ -34,7 +38,7 @@ export function Layout() {
 
             return (
               <Link
-                key={item.path}
+                key={item.label}
                 to={item.path}
                 className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   isActive

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { hasRequiredRole, type Role, type SeatsResponse } from '@meeting-assistant/shared';
 import { useAuth } from '../../hooks/useAuth';
 import { SeatsFooter } from '../../components/SeatsFooter';
+import { SettingsNav } from '../../components/SettingsNav';
 
 type LoadingState = 'idle' | 'loading' | 'success' | 'error';
 
@@ -93,6 +94,7 @@ export function SeatsPage() {
 
   return (
     <div>
+      <SettingsNav />
       <h1 className="text-2xl font-semibold text-[var(--color-fg)]">Seats</h1>
       <p className="mt-1 text-sm text-[var(--color-muted)]">
         Invite people to this workspace. Each pending invite and active member uses a seat.

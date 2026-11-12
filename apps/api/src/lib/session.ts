@@ -9,8 +9,10 @@ import { hashToken, randomToken } from './crypto.js';
 import {
   createSession,
   deleteSession,
+  purgeExpiredAuthRows,
   sessionContext,
   touchSession,
+  type AuthQueryClient,
   type AuthSessionContext,
 } from './auth-db.js';
 import type { MeResponse } from '@meeting-assistant/shared';
@@ -31,19 +33,25 @@ export async function issueSession(params: {
   userId: string;
   activeTenantId: string | null;
   previousToken?: string;
+  client?: AuthQueryClient;
 }): Promise<{ token: string; setCookie: string }> {
   if (params.previousToken) {
     await deleteSession(hashToken(params.previousToken)).catch(() => undefined);
   }
 
+  await purgeExpiredAuthRows().catch(() => undefined);
+
   const token = randomToken(32);
   const now = Date.now();
+  const absoluteMs = absoluteTtlSeconds() * 1000;
+  const idleMs = Math.min(idleTtlSeconds() * 1000, absoluteMs);
   await createSession({
     userId: params.userId,
     tokenHash: hashToken(token),
-    expiresAt: new Date(now + absoluteTtlSeconds() * 1000),
-    idleExpiresAt: new Date(now + idleTtlSeconds() * 1000),
+    expiresAt: new Date(now + absoluteMs),
+    idleExpiresAt: new Date(now + idleMs),
     activeTenantId: params.activeTenantId,
+    client: params.client,
   });
 
   return { token, setCookie: serializeSessionCookie(token) };

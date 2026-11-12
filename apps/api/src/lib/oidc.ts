@@ -1,8 +1,16 @@
 import * as client from 'openid-client';
+import * as jose from 'jose';
 import type { OidcProvider } from '@meeting-assistant/shared';
 import { logger } from './logger.js';
 import { assertMicrosoftIssuer } from './oidc-issuer.js';
+import {
+  checkIdTokenIat,
+  isOidcEmailVerified,
+  oidcClockSkewSeconds,
+  oidcIdTokenMaxAgeSeconds,
+} from './oidc-claims.js';
 import { HttpError } from './http-error.js';
+import { publicBaseUrl } from './runtime-env.js';
 
 export interface OidcProviderConfig {
   issuer: URL;
@@ -11,10 +19,10 @@ export interface OidcProviderConfig {
 }
 
 const cached = new Map<OidcProvider, client.Configuration>();
+const jwksCache = new Map<string, ReturnType<typeof jose.createRemoteJWKSet>>();
 
 export function providerRedirectUri(provider: OidcProvider): string {
-  const base = (process.env.OIDC_REDIRECT_BASE || process.env.API_PUBLIC_URL || `http://localhost:${process.env.PORT || 3001}`).replace(/\/$/, '');
-  return `${base}/api/v1/auth/callback/${provider}`;
+  return `${publicBaseUrl()}/api/v1/auth/callback/${provider}`;
 }
 
 export function getProviderConfig(provider: OidcProvider): OidcProviderConfig | null {
@@ -39,6 +47,16 @@ export function getProviderConfig(provider: OidcProvider): OidcProviderConfig | 
   };
 }
 
+function assertProductionIssuer(cfg: OidcProviderConfig): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (process.env.OIDC_ALLOW_MOCK === 'true') {
+    throw new HttpError(503, 'OIDC_FAILED', 'OIDC_ALLOW_MOCK cannot be set when NODE_ENV=production');
+  }
+  if (cfg.issuer.protocol === 'http:') {
+    throw new HttpError(503, 'OIDC_FAILED', 'HTTP OIDC issuers are not allowed in production');
+  }
+}
+
 export async function getOidcConfiguration(provider: OidcProvider): Promise<client.Configuration> {
   const existing = cached.get(provider);
   if (existing) return existing;
@@ -47,9 +65,11 @@ export async function getOidcConfiguration(provider: OidcProvider): Promise<clie
   if (!cfg) {
     throw new HttpError(503, 'OIDC_FAILED', `${provider} sign-in is not configured`);
   }
+  assertProductionIssuer(cfg);
 
   const allowInsecure =
-    process.env.OIDC_ALLOW_MOCK === 'true' || cfg.issuer.protocol === 'http:';
+    process.env.NODE_ENV !== 'production' &&
+    (process.env.OIDC_ALLOW_MOCK === 'true' || cfg.issuer.protocol === 'http:');
   const configuration = await client.discovery(
     cfg.issuer,
     cfg.clientId,
@@ -64,6 +84,7 @@ export async function getOidcConfiguration(provider: OidcProvider): Promise<clie
 /** Test hook: drop cached discovery (mock IdP restarts on a new port). */
 export function clearOidcCache(): void {
   cached.clear();
+  jwksCache.clear();
 }
 
 export async function buildAuthorizationRequest(provider: OidcProvider): Promise<{
@@ -98,6 +119,41 @@ export interface OidcClaims {
   name: string | null;
   iss: string;
   tid?: string;
+  emailVerified: boolean;
+}
+
+export function callbackUrlFromStored(storedRedirectUri: string, requestUrl: URL): URL {
+  const callback = new URL(storedRedirectUri);
+  callback.search = '';
+  for (const key of ['code', 'state', 'error', 'error_description', 'iss']) {
+    const value = requestUrl.searchParams.get(key);
+    if (value) callback.searchParams.set(key, value);
+  }
+  return callback;
+}
+
+async function verifyIdTokenSignature(
+  configuration: client.Configuration,
+  idToken: string
+): Promise<void> {
+  const meta = configuration.serverMetadata();
+  if (!meta.jwks_uri) {
+    throw new HttpError(400, 'OIDC_FAILED', 'OIDC issuer has no JWKS');
+  }
+  let jwks = jwksCache.get(meta.jwks_uri);
+  if (!jwks) {
+    jwks = jose.createRemoteJWKSet(new URL(meta.jwks_uri));
+    jwksCache.set(meta.jwks_uri, jwks);
+  }
+  try {
+    await jose.jwtVerify(idToken, jwks, {
+      issuer: meta.issuer,
+      audience: configuration.clientMetadata().client_id,
+      algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'PS256'],
+    });
+  } catch {
+    throw new HttpError(400, 'OIDC_FAILED', 'OIDC id_token signature invalid');
+  }
 }
 
 export async function exchangeAuthorizationCode(params: {
@@ -115,6 +171,7 @@ export async function exchangeAuthorizationCode(params: {
       pkceCodeVerifier: params.codeVerifier,
       expectedState: params.expectedState,
       expectedNonce: params.expectedNonce,
+      idTokenExpected: true,
     });
   } catch (err) {
     logger.warn({ provider: params.provider, err: (err as Error).name }, 'OIDC token exchange failed');
@@ -131,9 +188,30 @@ export async function exchangeAuthorizationCode(params: {
     throw new HttpError(400, 'OIDC_FAILED', 'OIDC token exchange failed');
   }
 
+  if (!tokens.id_token) {
+    throw new HttpError(400, 'OIDC_FAILED', 'OIDC token missing id_token');
+  }
+  await verifyIdTokenSignature(configuration, tokens.id_token);
+
   const claims = tokens.claims();
   if (!claims) {
     throw new HttpError(400, 'OIDC_FAILED', 'OIDC token missing claims');
+  }
+
+  const iatCheck = checkIdTokenIat(
+    claims.iat,
+    Math.floor(Date.now() / 1000),
+    oidcIdTokenMaxAgeSeconds(),
+    oidcClockSkewSeconds()
+  );
+  if (iatCheck !== 'ok') {
+    const message =
+      iatCheck === 'missing'
+        ? 'OIDC id_token missing iat'
+        : iatCheck === 'future'
+          ? 'OIDC id_token iat is in the future'
+          : 'OIDC id_token iat exceeds max age';
+    throw new HttpError(400, 'OIDC_FAILED', message);
   }
 
   if (params.provider === 'microsoft') {
@@ -163,5 +241,6 @@ export async function exchangeAuthorizationCode(params: {
     name,
     iss: String(claims.iss),
     tid: typeof claims.tid === 'string' ? claims.tid : undefined,
+    emailVerified: isOidcEmailVerified(params.provider, claims as Record<string, unknown>),
   };
 }

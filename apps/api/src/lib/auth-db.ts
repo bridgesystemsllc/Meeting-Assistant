@@ -3,7 +3,19 @@
  * Global tables are not queried directly.
  */
 
+import type pg from 'pg';
 import { db } from './db.js';
+
+export type AuthQueryClient = {
+  query: <T extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    values?: unknown[]
+  ) => Promise<pg.QueryResult<T>>;
+};
+
+function exec(client?: AuthQueryClient): AuthQueryClient {
+  return client ?? db;
+}
 
 export interface AuthUserRow {
   id: string;
@@ -65,12 +77,52 @@ export async function consumeOidcState(state: string): Promise<OidcStateRow | nu
   return result.rows[0]?.auth_consume_oidc_state ?? null;
 }
 
+export interface ResolveIdentityResult {
+  ok: boolean;
+  code?: string;
+  user?: AuthUserRow;
+  memberships?: AuthMembershipRow[];
+  invite?: { ok: boolean; code?: string; membership_id?: string; tenant_id?: string; role?: string };
+}
+
+export async function resolveIdentity(
+  params: {
+    issuer: string;
+    subject: string;
+    provider: 'google' | 'microsoft';
+    email: string;
+    name: string | null;
+    emailVerified: boolean;
+    inviteTokenHash: string | null;
+  },
+  client?: AuthQueryClient
+): Promise<ResolveIdentityResult> {
+  const result = await exec(client).query<{ auth_resolve_identity: ResolveIdentityResult }>(
+    'SELECT auth_resolve_identity($1,$2,$3,$4,$5,$6,$7) AS auth_resolve_identity',
+    [
+      params.issuer,
+      params.subject,
+      params.provider,
+      params.email,
+      params.name ?? '',
+      params.emailVerified,
+      params.inviteTokenHash,
+    ]
+  );
+  return result.rows[0].auth_resolve_identity;
+}
+
 export async function upsertUser(email: string, name: string | null): Promise<AuthUserRow> {
   const result = await db.query<{ auth_upsert_user: AuthUserRow }>(
     'SELECT auth_upsert_user($1,$2) AS auth_upsert_user',
     [email, name ?? '']
   );
   return result.rows[0].auth_upsert_user;
+}
+
+export async function purgeExpiredAuthRows(): Promise<number> {
+  const result = await db.query<{ auth_purge_expired: number }>('SELECT auth_purge_expired() AS auth_purge_expired');
+  return Number(result.rows[0]?.auth_purge_expired ?? 0);
 }
 
 export async function membershipsForEmail(email: string): Promise<AuthMembershipRow[]> {
@@ -87,8 +139,9 @@ export async function createSession(params: {
   expiresAt: Date;
   idleExpiresAt: Date;
   activeTenantId: string | null;
+  client?: AuthQueryClient;
 }): Promise<string> {
-  const result = await db.query<{ auth_create_session: string }>(
+  const result = await exec(params.client).query<{ auth_create_session: string }>(
     'SELECT auth_create_session($1,$2,$3,$4,$5) AS auth_create_session',
     [
       params.userId,
@@ -120,9 +173,10 @@ export async function deleteSession(tokenHash: string): Promise<void> {
 export async function acceptInvite(
   tokenHash: string,
   userId: string,
-  email: string
+  email: string,
+  client?: AuthQueryClient
 ): Promise<{ ok: boolean; code?: string; membership_id?: string; tenant_id?: string; role?: string }> {
-  const result = await db.query<{
+  const result = await exec(client).query<{
     auth_accept_invite: {
       ok: boolean;
       code?: string;
@@ -141,7 +195,7 @@ export interface InviteLookup {
   email?: string;
   role?: string;
   expires_at?: string;
-  tenant?: { id: string; name: string; slug: string };
+  tenant?: { id: string; name?: string; slug?: string };
 }
 
 export async function lookupInvite(tokenHash: string, expectedSlug: string | null): Promise<InviteLookup> {

@@ -63,19 +63,31 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - name: Bootstrap app role
+        # NOSUPERUSER NOBYPASSRLS app role, as on managed Postgres. The login
+        # password is a throwaway test-only value (same as the test harness).
+        run: psql -v ON_ERROR_STOP=1 -h localhost -U test -d test -f db/bootstrap-roles.sql
+        env:
+          PGPASSWORD: test
       - name: Run migrations
         run: |
           for f in db/migrations/*.sql; do
             echo "Applying $f"
-            psql -h localhost -U test -d test -f "$f"
+            psql -v ON_ERROR_STOP=1 -h localhost -U test -d test -f "$f"
           done
+        env:
+          PGPASSWORD: test
+      - name: Enable app role login
+        run: psql -v ON_ERROR_STOP=1 -h localhost -U test -d test -c "ALTER ROLE meeting_assistant_app WITH LOGIN PASSWORD 'app-test-secret'"
         env:
           PGPASSWORD: test
       - run: npm run test -- --run
         env:
           NODE_ENV: test
+          # Owner / migrations (CI superuser).
           DATABASE_URL: postgres://test:test@localhost:5432/test
-          DATABASE_APP_URL: postgres://test:test@localhost:5432/test
+          # App runtime: the restricted app role, never the owner. No fallback.
+          APP_DATABASE_URL: postgres://meeting_assistant_app:app-test-secret@localhost:5432/test
           REDIS_URL: redis://localhost:6379
           RECALL_WEBHOOK_SECRET: whsec_test_secret_for_ci
 

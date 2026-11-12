@@ -1,0 +1,139 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`heroContent contract > matches the §5.3a content snapshot 1`] = `
+{
+  "h1": [
+    "[PRODUCT NAME] the future",
+    "of meeting notes",
+  ],
+  "illustrativeCaption": "Illustrative product preview. Sample data.",
+  "mockup": {
+    "call": {
+      "caption": "I think the semantic indexing approach will significantly reduce our response times for the larger datasets...",
+      "controls": [
+        "Monitor",
+        "Mic",
+        "Video",
+        "Phone",
+      ],
+      "recordingChip": "Recording · [PRODUCT NAME] Notetaker",
+      "speaker": "ALEX RIVERA (SPEAKING)",
+    },
+    "participants": {
+      "extraBadge": "12+",
+      "people": [
+        {
+          "initial": "G",
+          "name": "Gustavo Franci",
+          "src": null,
+        },
+        {
+          "initial": "J",
+          "name": "Jely Miya",
+          "src": null,
+        },
+        {
+          "initial": "R",
+          "name": "Ruben Herwitz",
+          "src": null,
+        },
+      ],
+      "sentimentIllustrative": true,
+      "sentimentLabel": "SENTIMENT",
+      "sentimentValue": "Positive",
+    },
+    "summary": {
+      "actionItems": [
+        "Update pricing tiers in dashboard",
+        "Confirm Slack integration tests",
+        "Draft release notes for v1.2",
+      ],
+      "actionItemsLabel": "ACTION ITEMS",
+      "attendees": [
+        {
+          "background": "#fecbcb",
+          "initial": "S",
+          "src": null,
+        },
+        {
+          "background": "#bedafe",
+          "initial": "J",
+          "src": null,
+        },
+        {
+          "background": "#baf7d0",
+          "initial": "A",
+          "src": null,
+        },
+        {
+          "background": "#fef08a",
+          "initial": "M",
+          "src": null,
+        },
+      ],
+      "attendeesLabel": "ATTENDEES",
+      "badge": "LIVE ANALYSIS",
+      "efficiencyIllustrative": true,
+      "efficiencyLabel": "AI EFFICIENCY",
+      "efficiencyValue": "88%",
+      "extraCount": "+2",
+      "summary": "Reviewing the Q3 roadmap and finalizing the semantic search integration strategy.",
+      "summaryHighlight": "semantic search",
+      "synthesizing": "Synthesizing...",
+      "titleAccent": "Summary",
+      "titlePrefix": "Meeting ",
+    },
+  },
+  "nav": [
+    {
+      "href": "#company",
+      "label": "Company",
+    },
+    {
+      "href": "#features",
+      "label": "Features",
+    },
+    {
+      "href": "#integrations",
+      "label": "Integrations",
+    },
+    {
+      "href": "#pages",
+      "label": "Pages",
+    },
+    {
+      "href": "/pricing",
+      "label": "Pricing",
+    },
+    {
+      "href": "#article",
+      "label": "Article",
+    },
+  ],
+  "navCta": {
+    "href": "#waitlist",
+    "label": "Start for Free",
+  },
+  "pageTitle": "[PRODUCT NAME] — The future of meeting notes",
+  "primaryCta": {
+    "href": "#waitlist",
+    "label": "Try [PRODUCT NAME] for Free →",
+  },
+  "productName": "[PRODUCT NAME]",
+  "secondaryCta": {
+    "href": "#",
+    "label": "Download app",
+  },
+  "showDownloadCta": false,
+  "socialProof": {
+    "icon": "Sparkles",
+    "illustrative": true,
+    "text": "[PLACEHOLDER: Best AI notetaker platform.]",
+  },
+  "subtitle": "Capture, organize, and share your meeting insights in seconds—from any call platform with advanced semantic intelligence.",
+  "video": {
+    "poster": "/media/hero/poster.webp",
+    "src": null,
+  },
+}
+`;

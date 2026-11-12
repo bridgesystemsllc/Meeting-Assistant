@@ -178,7 +178,8 @@ describeIfDb('webhook burst tests', () => {
       .send(JSON.stringify(payload));
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('signature');
+    expect(res.body.error.code).toBe('BAD_SIGNATURE');
+    expect(res.body.error.message).toContain('signature');
   });
 
   it('missing_event_id_rejected: rejects webhook without event ID header', async () => {
@@ -196,7 +197,8 @@ describeIfDb('webhook burst tests', () => {
       .send(body);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('event ID');
+    expect(res.body.error.code).toBe('BAD_SIGNATURE');
+    expect(res.body.error.message).toContain('event ID');
   });
 
   it('invalid_signature_returns_400: rejects webhook with wrong signature', async () => {
@@ -214,7 +216,8 @@ describeIfDb('webhook burst tests', () => {
       .send(body);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('signature');
+    expect(res.body.error.code).toBe('BAD_SIGNATURE');
+    expect(res.body.error.message).toContain('signature');
   });
 });
 

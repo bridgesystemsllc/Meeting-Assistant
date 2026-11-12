@@ -2,13 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { OAuth2Server } from 'oauth2-mock-server';
 
-const APP_PASSWORD = 'app-test-secret';
+export const APP_PASSWORD = 'app-test-secret';
+export const MANAGED_OWNER_PASSWORD = 'owner-test-secret';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, '../../../../db/migrations');
+const bootstrapRolesPath = path.resolve(here, '../../../../db/bootstrap-roles.sql');
 
 export interface TestStack {
   container: { stop: () => Promise<unknown> };
@@ -16,6 +18,17 @@ export interface TestStack {
   appUrl: string;
   mockOidc: OAuth2Server;
   issuerUrl: string;
+}
+
+export function rewriteConnectionUrl(
+  baseUrl: string,
+  parts: { username?: string; password?: string; database?: string }
+): string {
+  const url = new URL(baseUrl);
+  if (parts.username !== undefined) url.username = parts.username;
+  if (parts.password !== undefined) url.password = parts.password;
+  if (parts.database !== undefined) url.pathname = `/${parts.database}`;
+  return url.toString();
 }
 
 export async function applyMigrations(ownerUrl: string): Promise<void> {
@@ -27,17 +40,36 @@ export async function applyMigrations(ownerUrl: string): Promise<void> {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
-    await client.query(`ALTER ROLE meeting_assistant_app WITH LOGIN PASSWORD '${APP_PASSWORD}'`);
+  } finally {
+    await client.end();
+  }
+}
+
+export async function bootstrapAppRole(adminUrl: string): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(fs.readFileSync(bootstrapRolesPath, 'utf8'));
+  } finally {
+    await client.end();
+  }
+}
+
+export async function enableAppRoleLogin(adminUrl: string, password = APP_PASSWORD): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(`ALTER ROLE meeting_assistant_app WITH LOGIN PASSWORD '${password}'`);
   } finally {
     await client.end();
   }
 }
 
 function appConnectionUrl(ownerUrl: string): string {
-  const url = new URL(ownerUrl);
-  url.username = 'meeting_assistant_app';
-  url.password = APP_PASSWORD;
-  return url.toString();
+  return rewriteConnectionUrl(ownerUrl, {
+    username: 'meeting_assistant_app',
+    password: APP_PASSWORD,
+  });
 }
 
 export interface PostgresStack {
@@ -47,25 +79,163 @@ export interface PostgresStack {
 }
 
 /**
- * Start Postgres - uses CI DATABASE_URL if available, otherwise Testcontainers
+ * Superuser URL of an externally provided Postgres (the CI service container).
+ * Pinned on first use so later applyAuthEnv() rewrites of DATABASE_URL to a
+ * per-file database do not change where new databases are created.
+ */
+function externalAdminUrl(): string | undefined {
+  if (!process.env.TEST_ADMIN_DATABASE_URL && process.env.DATABASE_URL) {
+    process.env.TEST_ADMIN_DATABASE_URL = process.env.DATABASE_URL;
+  }
+  return process.env.TEST_ADMIN_DATABASE_URL;
+}
+
+async function adminExec(adminUrl: string, sql: string): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(sql);
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * External Postgres (CI): same shape as the Testcontainers path. A fresh
+ * database per call, the NOSUPERUSER NOBYPASSRLS app role bootstrapped, all
+ * migrations applied by the superuser owner, and a distinct app-role URL.
+ * The owner/superuser URL is never handed out as the app URL.
+ */
+async function startExternalPostgres(adminUrl: string): Promise<PostgresStack> {
+  const database = `ma_test_${process.pid}_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  await adminExec(adminUrl, `CREATE DATABASE ${database}`);
+  await bootstrapAppRole(adminUrl);
+  await enableAppRoleLogin(adminUrl);
+  await adminExec(adminUrl, `GRANT CONNECT ON DATABASE ${database} TO meeting_assistant_app`);
+
+  const ownerUrl = rewriteConnectionUrl(adminUrl, { database });
+  await applyMigrations(ownerUrl);
+  return {
+    container: {
+      stop: async () => {
+        try {
+          await adminExec(adminUrl, `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+        } catch {
+          // best effort; the CI service container is discarded after the job
+        }
+      },
+    },
+    ownerUrl,
+    appUrl: rewriteConnectionUrl(appConnectionUrl(adminUrl), { database }),
+  };
+}
+
+/**
+ * Fresh, empty database (app role bootstrapped, NO migrations applied) for
+ * upgrade-path tests. CI DATABASE_URL server when set, otherwise Testcontainers.
+ * ownerUrl is the superuser on that database.
+ */
+export async function startEmptyPostgres(): Promise<PostgresStack> {
+  const adminUrl = externalAdminUrl();
+  if (adminUrl) {
+    const database = `ma_upg_${process.pid}_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    await adminExec(adminUrl, `CREATE DATABASE ${database}`);
+    await bootstrapAppRole(adminUrl);
+    return {
+      container: {
+        stop: async () => {
+          try {
+            await adminExec(adminUrl, `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+          } catch {
+            // best effort; the CI service container is discarded after the job
+          }
+        },
+      },
+      ownerUrl: rewriteConnectionUrl(adminUrl, { database }),
+      appUrl: rewriteConnectionUrl(appConnectionUrl(adminUrl), { database }),
+    };
+  }
+
+  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const ownerUrl = container.getConnectionUri();
+  await bootstrapAppRole(ownerUrl);
+  return { container, ownerUrl, appUrl: appConnectionUrl(ownerUrl) };
+}
+
+/**
+ * Start Postgres - uses the CI DATABASE_URL server if available (fresh
+ * database per call), otherwise Testcontainers.
  */
 export async function startPostgres(): Promise<PostgresStack> {
-  // If DATABASE_URL is set (CI environment), use it directly
-  const ciDatabaseUrl = process.env.DATABASE_URL;
-  if (ciDatabaseUrl) {
-    // In CI, migrations are already applied by the workflow
-    return {
-      container: { stop: async () => { /* no-op in CI */ } },
-      ownerUrl: ciDatabaseUrl,
-      appUrl: ciDatabaseUrl, // In CI, we use the same URL
-    };
+  const adminUrl = externalAdminUrl();
+  if (adminUrl) {
+    return startExternalPostgres(adminUrl);
   }
 
   // Local development: use Testcontainers
   const container = await new PostgreSqlContainer('postgres:16-alpine').start();
   const ownerUrl = container.getConnectionUri();
   await applyMigrations(ownerUrl);
+  await enableAppRoleLogin(ownerUrl);
   return { container, ownerUrl, appUrl: appConnectionUrl(ownerUrl) };
+}
+
+/**
+ * Superuser creates a NOSUPERUSER NOBYPASSRLS database owner, bootstraps the
+ * app role, then runs migrations as that owner — matching managed Postgres.
+ */
+export async function startPostgresManagedOwner(): Promise<{
+  container: StartedPostgreSqlContainer;
+  adminUrl: string;
+  ownerUrl: string;
+  appUrl: string;
+}> {
+  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const adminUrl = container.getConnectionUri();
+  const admin = new pg.Client({ connectionString: adminUrl });
+  await admin.connect();
+  try {
+    await admin.query(`
+      CREATE ROLE meeting_assistant_owner
+        LOGIN PASSWORD '${MANAGED_OWNER_PASSWORD}'
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS
+    `);
+    await admin.query('CREATE DATABASE ma_managed OWNER meeting_assistant_owner');
+  } finally {
+    await admin.end();
+  }
+
+  await bootstrapAppRole(adminUrl);
+  await enableAppRoleLogin(adminUrl);
+
+  const adminGrants = new pg.Client({ connectionString: adminUrl });
+  await adminGrants.connect();
+  try {
+    await adminGrants.query(
+      'GRANT meeting_assistant_app TO meeting_assistant_owner WITH ADMIN OPTION'
+    );
+    await adminGrants.query('GRANT CONNECT ON DATABASE ma_managed TO meeting_assistant_app');
+  } finally {
+    await adminGrants.end();
+  }
+
+  const ownerUrl = rewriteConnectionUrl(adminUrl, {
+    username: 'meeting_assistant_owner',
+    password: MANAGED_OWNER_PASSWORD,
+    database: 'ma_managed',
+  });
+  await applyMigrations(ownerUrl);
+
+  const appUrl = rewriteConnectionUrl(adminUrl, {
+    username: 'meeting_assistant_app',
+    password: APP_PASSWORD,
+    database: 'ma_managed',
+  });
+  return { container, adminUrl, ownerUrl, appUrl };
 }
 
 export async function startMockOidc(): Promise<{ server: OAuth2Server; issuerUrl: string }> {
@@ -81,32 +251,46 @@ export async function startMockOidc(): Promise<{ server: OAuth2Server; issuerUrl
 
 export function configureMockUser(
   server: OAuth2Server,
-  profile: { email: string; name?: string; sub?: string }
+  profile: {
+    email: string;
+    name?: string;
+    sub?: string;
+    emailVerified?: boolean;
+    xmsEdov?: boolean;
+  }
 ): void {
+  server.service.removeAllListeners('beforeTokenSigning');
+  server.service.removeAllListeners('beforeUserinfo');
+  const emailVerified = profile.emailVerified !== false;
+  const sub = profile.sub ?? `mock-sub-${profile.email}`;
   const handler = (token: { payload: Record<string, unknown> }) => {
     token.payload.email = profile.email;
-    token.payload.email_verified = true;
+    token.payload.email_verified = emailVerified;
     token.payload.name = profile.name ?? profile.email;
     token.payload.preferred_username = profile.email;
-    if (profile.sub) token.payload.sub = profile.sub;
+    token.payload.sub = sub;
     token.payload.tid = 'mock-tenant';
+    if (profile.xmsEdov === true) token.payload.xms_edov = true;
+    if (profile.xmsEdov === false) token.payload.xms_edov = false;
   };
   server.service.on('beforeTokenSigning', handler);
   server.service.on('beforeUserinfo', (userInfoResponse) => {
     userInfoResponse.body.email = profile.email;
-    userInfoResponse.body.email_verified = true;
+    userInfoResponse.body.email_verified = emailVerified;
     userInfoResponse.body.name = profile.name ?? profile.email;
+    userInfoResponse.body.sub = sub;
   });
 }
 
 export function applyAuthEnv(params: { ownerUrl: string; appUrl: string; issuerUrl: string }): void {
   process.env.NODE_ENV = 'test';
   process.env.DATABASE_URL = params.ownerUrl;
-  process.env.DATABASE_APP_URL = params.appUrl;
+  process.env.APP_DATABASE_URL = params.appUrl;
   process.env.PG_POOL_MAX = '1';
   process.env.COOKIE_SECURE = 'false';
   process.env.FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
   process.env.OIDC_ALLOW_MOCK = 'true';
+  process.env.OIDC_STATE_SECRET = 'test-oidc-state-secret';
   process.env.GOOGLE_CLIENT_ID = 'test-google-client';
   process.env.GOOGLE_CLIENT_SECRET = 'test-google-secret';
   process.env.GOOGLE_ISSUER = params.issuerUrl;
@@ -115,4 +299,5 @@ export function applyAuthEnv(params: { ownerUrl: string; appUrl: string; issuerU
   process.env.MS_ISSUER = params.issuerUrl;
   process.env.OIDC_REDIRECT_BASE = '';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
+  process.env.AUDIT_EMAIL_HMAC_KEY = process.env.AUDIT_EMAIL_HMAC_KEY || 'test-audit-email-hmac-key';
 }

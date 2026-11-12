@@ -13,6 +13,7 @@ import {
   type SeatMember,
   type SeatsResponse,
 } from '@meeting-assistant/shared';
+import { recordAudit } from '../lib/audit.js';
 import { hashToken, randomToken } from '../lib/crypto.js';
 import { withTenant } from '../lib/db.js';
 import { sendInviteEmail } from '../lib/email.js';
@@ -79,7 +80,9 @@ async function loadDirectory(
   }>(
     `SELECT id, user_id, role, seat_status
      FROM memberships
-     ORDER BY created_at ASC`
+     WHERE tenant_id = $1
+     ORDER BY created_at ASC`,
+    [tenantId]
   );
 
   const userIds = memberships.rows.map((row) => row.user_id);
@@ -119,10 +122,12 @@ async function loadDirectory(
   }>(
     `SELECT id, email, role, expires_at, created_at
      FROM invites
-     WHERE accepted_at IS NULL
+     WHERE tenant_id = $1
+       AND accepted_at IS NULL
        AND revoked_at IS NULL
        AND expires_at > clock_timestamp()
-     ORDER BY created_at ASC`
+     ORDER BY created_at ASC`,
+    [tenantId]
   );
 
   const invites: PendingInvite[] = invitesResult.rows.map((row) => ({
@@ -164,7 +169,11 @@ async function insertInvite(
      RETURNING id`,
     [params.tenantId, params.email, params.role, params.tokenHash, params.expiresAt.toISOString()]
   );
-  return result.rows[0];
+  const row = result.rows[0];
+  if (!row) {
+    throw new HttpError(500, 'INTERNAL', 'Invite could not be created');
+  }
+  return row;
 }
 
 export async function inviteMember(auth: MeResponse, input: InviteRequest): Promise<SeatsResponse> {
@@ -172,6 +181,13 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
   assertCanAssignRole(auth, body.role);
 
   const existing = (await membershipsForEmail(body.email)).find((m) => m.tenant.id === auth.tenant.id);
+  if (existing?.seat_status === 'deactivated') {
+    throw new HttpError(
+      409,
+      'MEMBER_DEACTIVATED',
+      'This seat is deactivated. Ask your admin to reactivate it.'
+    );
+  }
   if (existing && (existing.seat_status === 'active' || existing.seat_status === 'invited')) {
     throw new HttpError(409, 'ALREADY_MEMBER', 'This person already has a seat');
   }
@@ -192,30 +208,37 @@ export async function inviteMember(auth: MeResponse, input: InviteRequest): Prom
 
     const pending = await client.query(
       `SELECT id FROM invites
-       WHERE lower(email) = $1
+       WHERE tenant_id = $2
+         AND lower(email) = $1
          AND accepted_at IS NULL
          AND revoked_at IS NULL
          AND expires_at > clock_timestamp()`,
-      [body.email]
+      [body.email, auth.tenant.id]
     );
     if (pending.rowCount) {
       throw new HttpError(409, 'ALREADY_MEMBER', 'An invite is already pending for this email');
     }
 
-    await insertInvite(client, {
+    const invite = await insertInvite(client, {
       tenantId: auth.tenant.id,
       email: body.email,
       role: body.role,
       tokenHash,
       expiresAt,
     });
+    await sendInviteEmail({
+      to: body.email,
+      tenantName: auth.tenant.name,
+      acceptUrl: acceptUrl(token, auth.tenant.slug),
+    });
+    await recordAudit(client, {
+      tenantId: auth.tenant.id,
+      actorUserId: auth.user.id,
+      action: 'invite.sent',
+      target: invite.id,
+      meta: { email: body.email, role: body.role },
+    });
     return loadDirectory(client, auth.tenant.id, true);
-  });
-
-  await sendInviteEmail({
-    to: body.email,
-    tenantName: auth.tenant.name,
-    acceptUrl: acceptUrl(token, auth.tenant.slug),
   });
 
   return seats;
@@ -227,17 +250,20 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
   const expiresAt = new Date(Date.now() + inviteTtlMs());
   let email = '';
 
-  const seats = await withTenant(auth.tenant.id, async (client) => {
+  const outcome = await withTenant(auth.tenant.id, async (client) => {
+    const usage = await snapshot(client, auth.tenant.id, true);
     const found = await client.query<{
       id: string;
       email: string;
       role: InviteRequest['role'];
       accepted_at: Date | null;
       revoked_at: Date | null;
+      expires_at: Date | string;
     }>(
-      `SELECT id, email, role, accepted_at, revoked_at
-       FROM invites WHERE id = $1`,
-      [inviteId]
+      `SELECT id, email, role, accepted_at, revoked_at, expires_at
+       FROM invites WHERE id = $1 AND tenant_id = $2
+       FOR UPDATE`,
+      [inviteId, auth.tenant.id]
     );
     const invite = found.rows[0];
     if (!invite) {
@@ -249,6 +275,42 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
     if (invite.revoked_at) {
       throw new HttpError(400, 'INVITE_REVOKED', 'That invite was revoked.');
     }
+    const existingMember = (await membershipsForEmail(invite.email)).find(
+      (m) => m.tenant.id === auth.tenant.id
+    );
+    if (existingMember?.seat_status === 'active' || existingMember?.seat_status === 'deactivated') {
+      await client.query(
+        `UPDATE invites
+            SET revoked_at = clock_timestamp()
+          WHERE id = $1 AND tenant_id = $2
+            AND accepted_at IS NULL AND revoked_at IS NULL`,
+        [inviteId, auth.tenant.id]
+      );
+      return {
+        kind: 'rejected' as const,
+        code: existingMember.seat_status === 'deactivated' ? 'MEMBER_DEACTIVATED' : 'ALREADY_MEMBER',
+        message:
+          existingMember.seat_status === 'deactivated'
+            ? 'This seat is deactivated. Ask your admin to reactivate it.'
+            : 'This person already has a seat',
+      };
+    }
+    const currentlyCounted = new Date(invite.expires_at).getTime() > Date.now();
+    if (currentlyCounted) {
+      if (usage.seats_used > usage.seat_limit) {
+        throw new HttpError(
+          409,
+          'SEAT_LIMIT_REACHED',
+          `All ${usage.seat_limit} seats are in use. Ask your admin.`
+        );
+      }
+    } else if (seatLimitReached(usage.seats_used, usage.seat_limit)) {
+      throw new HttpError(
+        409,
+        'SEAT_LIMIT_REACHED',
+        `All ${usage.seat_limit} seats are in use. Ask your admin.`
+      );
+    }
     assertCanAssignRole(auth, invite.role);
     email = invite.email;
     await client.query(
@@ -256,28 +318,45 @@ export async function resendInvite(auth: MeResponse, inviteId: string): Promise<
           SET token_hash = $2,
               expires_at = $3,
               revoked_at = NULL
-        WHERE id = $1`,
-      [inviteId, tokenHash, expiresAt.toISOString()]
+        WHERE id = $1 AND tenant_id = $4`,
+      [inviteId, tokenHash, expiresAt.toISOString(), auth.tenant.id]
     );
-    return loadDirectory(client, auth.tenant.id, true);
+    await sendInviteEmail({
+      to: email,
+      tenantName: auth.tenant.name,
+      acceptUrl: acceptUrl(token, auth.tenant.slug),
+    });
+    await recordAudit(client, {
+      tenantId: auth.tenant.id,
+      actorUserId: auth.user.id,
+      action: 'invite.resent',
+      target: invite.id,
+      meta: { email: invite.email, role: invite.role },
+    });
+    return { kind: 'ok' as const, seats: await loadDirectory(client, auth.tenant.id, true) };
   });
 
-  await sendInviteEmail({
-    to: email,
-    tenantName: auth.tenant.name,
-    acceptUrl: acceptUrl(token, auth.tenant.slug),
-  });
-
-  return seats;
+  if (outcome.kind === 'rejected') {
+    throw new HttpError(409, outcome.code, outcome.message);
+  }
+  return outcome.seats;
 }
 
 export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<SeatsResponse> {
+  // Repeating revoke after success returns 200 with no new audit row.
+  // Concurrent callers serialize on SELECT FOR UPDATE so exactly one
+  // state change and one audit row is recorded.
   return withTenant(auth.tenant.id, async (client) => {
     const found = await client.query<{
       id: string;
+      email: string;
+      role: InviteRequest['role'];
       accepted_at: Date | null;
       revoked_at: Date | null;
-    }>(`SELECT id, accepted_at, revoked_at FROM invites WHERE id = $1`, [inviteId]);
+    }>(
+      `SELECT id, email, role, accepted_at, revoked_at FROM invites WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [inviteId, auth.tenant.id]
+    );
     const invite = found.rows[0];
     if (!invite) {
       throw new HttpError(404, 'NOT_FOUND', 'Invite not found');
@@ -286,20 +365,37 @@ export async function revokeInvite(auth: MeResponse, inviteId: string): Promise<
       throw new HttpError(400, 'INVITE_USED', 'That invite link has already been used.');
     }
     if (!invite.revoked_at) {
-      await client.query(`UPDATE invites SET revoked_at = clock_timestamp() WHERE id = $1`, [inviteId]);
+      await client.query(
+        `UPDATE invites SET revoked_at = clock_timestamp() WHERE id = $1 AND tenant_id = $2`,
+        [inviteId, auth.tenant.id]
+      );
+      await recordAudit(client, {
+        tenantId: auth.tenant.id,
+        actorUserId: auth.user.id,
+        action: 'invite.revoked',
+        target: invite.id,
+        meta: { email: invite.email, role: invite.role },
+      });
     }
     return loadDirectory(client, auth.tenant.id, true);
   });
 }
 
 export async function deactivateMember(auth: MeResponse, membershipId: string): Promise<SeatsResponse> {
+  // Repeating deactivate after success returns 200 with no new audit row.
+  // Concurrent callers serialize on SELECT FOR UPDATE so exactly one
+  // state change and one audit row is recorded.
   return withTenant(auth.tenant.id, async (client) => {
+    await snapshot(client, auth.tenant.id, true);
     const found = await client.query<{
       id: string;
       user_id: string;
       role: SeatMember['role'];
       seat_status: SeatMember['seat_status'];
-    }>(`SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1`, [membershipId]);
+    }>(
+      `SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [membershipId, auth.tenant.id]
+    );
     const membership = found.rows[0];
     if (!membership) {
       throw new HttpError(404, 'NOT_FOUND', 'Member not found');
@@ -311,15 +407,26 @@ export async function deactivateMember(auth: MeResponse, membershipId: string): 
       const owners = await client.query<{ n: string }>(
         `SELECT COUNT(*)::text AS n
          FROM memberships
-         WHERE role = 'owner' AND seat_status = 'active'`
+         WHERE tenant_id = $1 AND role = 'owner' AND seat_status = 'active'`,
+        [auth.tenant.id]
       );
       if (Number(owners.rows[0]?.n ?? 0) <= 1) {
         throw new HttpError(409, 'LAST_OWNER', 'The last active owner cannot be deactivated');
       }
     }
     if (membership.seat_status !== 'deactivated') {
-      await client.query(`UPDATE memberships SET seat_status = 'deactivated' WHERE id = $1`, [membershipId]);
+      await client.query(
+        `UPDATE memberships SET seat_status = 'deactivated' WHERE id = $1 AND tenant_id = $2`,
+        [membershipId, auth.tenant.id]
+      );
       await revokeSessions(client, membership.user_id, auth.tenant.id);
+      await recordAudit(client, {
+        tenantId: auth.tenant.id,
+        actorUserId: auth.user.id,
+        action: 'member.deactivated',
+        target: membership.id,
+        meta: { user_id: membership.user_id, role: membership.role },
+      });
     }
     return loadDirectory(client, auth.tenant.id, true);
   });
@@ -330,9 +437,13 @@ export async function reactivateMember(auth: MeResponse, membershipId: string): 
     const usage = await snapshot(client, auth.tenant.id, true);
     const found = await client.query<{
       id: string;
+      user_id: string;
       role: SeatMember['role'];
       seat_status: SeatMember['seat_status'];
-    }>(`SELECT id, role, seat_status FROM memberships WHERE id = $1`, [membershipId]);
+    }>(
+      `SELECT id, user_id, role, seat_status FROM memberships WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+      [membershipId, auth.tenant.id]
+    );
     const membership = found.rows[0];
     if (!membership) {
       throw new HttpError(404, 'NOT_FOUND', 'Member not found');
@@ -348,7 +459,17 @@ export async function reactivateMember(auth: MeResponse, membershipId: string): 
           `All ${usage.seat_limit} seats are in use. Ask your admin.`
         );
       }
-      await client.query(`UPDATE memberships SET seat_status = 'active' WHERE id = $1`, [membershipId]);
+      await client.query(
+        `UPDATE memberships SET seat_status = 'active' WHERE id = $1 AND tenant_id = $2`,
+        [membershipId, auth.tenant.id]
+      );
+      await recordAudit(client, {
+        tenantId: auth.tenant.id,
+        actorUserId: auth.user.id,
+        action: 'member.reactivated',
+        target: membership.id,
+        meta: { user_id: membership.user_id, role: membership.role },
+      });
     }
     return loadDirectory(client, auth.tenant.id, true);
   });

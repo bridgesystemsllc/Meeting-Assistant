@@ -7,7 +7,9 @@
  * P3-1: DLQ for process-meeting after final retry
  * 
  * Uses runTenantJob around every DB statement and requires tenantId on job payload.
- * Uses lookupUserContact(), not direct SELECT FROM users.
+ * Every statement also filters tenant_id in SQL (defense in depth with FORCE RLS).
+ * A 0-row claim UPDATE is a failure (wrong tenant or missing meeting), not success.
+ * Uses lookupUserContact(userId, tenantId), not direct SELECT FROM users.
  */
 
 import type { Job } from 'bullmq';
@@ -15,6 +17,8 @@ import type { PoolClient } from 'pg';
 import { logger } from '../lib/logger.js';
 import { runTenantJob, TenantJobError } from '../lib/tenantJob.js';
 import { lookupUserContact } from '../lib/user-lookup.js';
+
+export const MEETING_NOT_IN_TENANT = 'MEETING_NOT_IN_TENANT';
 
 export interface ProcessMeetingData {
   meetingId: string;
@@ -88,7 +92,7 @@ export async function processMeeting(
   logger.info({ meetingId, recallBotId, tenantId }, 'Starting meeting processing');
 
   try {
-    // Get meeting details and update status to processing
+    // Load the meeting and claim it (status = processing) under the job tenant.
     const meeting = await runTenantJob(job.data, async (client) => {
       const result = await client.query<{
         id: string;
@@ -101,27 +105,27 @@ export async function processMeeting(
         media_deleted_at: Date | null;
       }>(
         `SELECT id, tenant_id, user_id, title, platform, started_at, duration_seconds, media_deleted_at 
-         FROM meetings WHERE id = $1`,
-        [meetingId]
+         FROM meetings WHERE id = $1 AND tenant_id = $2`,
+        [meetingId, tenantId]
       );
-
-      if (result.rows.length === 0) {
-        throw new Error(`Meeting ${meetingId} not found`);
-      }
+      const row = result.rows[0];
 
       // Verify job tenantId matches meeting's tenant_id (FK integrity)
-      const meeting = result.rows[0];
-      if (meeting.tenant_id !== tenantId) {
-        throw new Error(`Tenant mismatch: job has ${tenantId}, meeting has ${meeting.tenant_id}`);
+      if (row && row.tenant_id !== tenantId) {
+        throw new Error(`Tenant mismatch: job has ${tenantId}, meeting has ${row.tenant_id}`);
       }
 
-      // Update status to processing
-      await client.query(
-        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-        ['processing', meetingId]
+      const claimed = await client.query(
+        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+        ['processing', meetingId, tenantId]
       );
-
-      return result.rows[0];
+      if (!claimed.rowCount) {
+        throw new Error(MEETING_NOT_IN_TENANT);
+      }
+      if (!row) {
+        throw new Error(`Meeting ${meetingId} not found`);
+      }
+      return row;
     });
 
     await job.updateProgress(10);
@@ -135,8 +139,8 @@ export async function processMeeting(
       logger.warn({ meetingId, recallBotId }, 'No transcript available');
       await runTenantJob(job.data, async (client) => {
         await client.query(
-          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-          ['failed', meetingId]
+          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          ['failed', meetingId, tenantId]
         );
       });
       return { success: false, meetingId };
@@ -172,8 +176,8 @@ export async function processMeeting(
       // Update meeting with detected language
       if (formattedTranscript.language) {
         await client.query(
-          'UPDATE meetings SET language = $1 WHERE id = $2',
-          [formattedTranscript.language, meetingId]
+          'UPDATE meetings SET language = $1 WHERE id = $2 AND tenant_id = $3',
+          [formattedTranscript.language, meetingId, tenantId]
         );
       }
     });
@@ -188,8 +192,8 @@ export async function processMeeting(
       // Track media deletion time
       await runTenantJob(job.data, async (client) => {
         await client.query(
-          'UPDATE meetings SET media_deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
-          [meetingId]
+          'UPDATE meetings SET media_deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2',
+          [meetingId, tenantId]
         );
       });
       logger.info({ meetingId, recallBotId }, 'Media deleted successfully');
@@ -228,7 +232,7 @@ export async function processMeeting(
     await job.updateProgress(85);
 
     // Step 6: Send recap email to owner only (using lookupUserContact)
-    const owner = await lookupUserContact(meeting.user_id);
+    const owner = await lookupUserContact(meeting.user_id, tenantId);
 
     if (owner) {
       if (isSmtpConfigured()) {
@@ -244,7 +248,7 @@ export async function processMeeting(
           analysis,
           ownerEmail: owner.email,
           ownerName: owner.name || undefined,
-          ownerId: owner.id, // P3-2: Pass user id for logging (not email)
+          ownerId: meeting.user_id,
           language: formattedTranscript.language,
         });
 
@@ -278,8 +282,8 @@ export async function processMeeting(
     // P1-4: Check media_deleted_at before marking completed
     const canComplete = await runTenantJob(job.data, async (client) => {
       const result = await client.query<{ media_deleted_at: Date | null }>(
-        'SELECT media_deleted_at FROM meetings WHERE id = $1',
-        [meetingId]
+        'SELECT media_deleted_at FROM meetings WHERE id = $1 AND tenant_id = $2',
+        [meetingId, tenantId]
       );
       return result.rows[0]?.media_deleted_at != null;
     });
@@ -288,8 +292,8 @@ export async function processMeeting(
     const finalStatus = canComplete ? 'completed' : 'media_pending';
     await runTenantJob(job.data, async (client) => {
       await client.query(
-        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-        [finalStatus, meetingId]
+        'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+        [finalStatus, meetingId, tenantId]
       );
     });
 
@@ -318,8 +322,8 @@ export async function processMeeting(
             [tenantId, meetingId, job.id, String(err), job.attemptsMade + 1]
           );
           await client.query(
-            'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-            ['dlq', meetingId]
+            'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+            ['dlq', meetingId, tenantId]
           );
         });
       } catch (dlqErr) {
@@ -332,8 +336,8 @@ export async function processMeeting(
     try {
       await runTenantJob(job.data, async (client) => {
         await client.query(
-          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2',
-          ['failed', meetingId]
+          'UPDATE meetings SET status = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          ['failed', meetingId, tenantId]
         );
       });
     } catch (dbErr) {
