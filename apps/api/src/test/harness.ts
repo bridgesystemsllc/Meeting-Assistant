@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { OAuth2Server } from 'oauth2-mock-server';
 
 export const APP_PASSWORD = 'app-test-secret';
@@ -79,18 +79,101 @@ export interface PostgresStack {
 }
 
 /**
- * Start Postgres - uses CI DATABASE_URL if available, otherwise Testcontainers
+ * Superuser URL of an externally provided Postgres (the CI service container).
+ * Pinned on first use so later applyAuthEnv() rewrites of DATABASE_URL to a
+ * per-file database do not change where new databases are created.
+ */
+function externalAdminUrl(): string | undefined {
+  if (!process.env.TEST_ADMIN_DATABASE_URL && process.env.DATABASE_URL) {
+    process.env.TEST_ADMIN_DATABASE_URL = process.env.DATABASE_URL;
+  }
+  return process.env.TEST_ADMIN_DATABASE_URL;
+}
+
+async function adminExec(adminUrl: string, sql: string): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl });
+  await client.connect();
+  try {
+    await client.query(sql);
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * External Postgres (CI): same shape as the Testcontainers path. A fresh
+ * database per call, the NOSUPERUSER NOBYPASSRLS app role bootstrapped, all
+ * migrations applied by the superuser owner, and a distinct app-role URL.
+ * The owner/superuser URL is never handed out as the app URL.
+ */
+async function startExternalPostgres(adminUrl: string): Promise<PostgresStack> {
+  const database = `ma_test_${process.pid}_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  await adminExec(adminUrl, `CREATE DATABASE ${database}`);
+  await bootstrapAppRole(adminUrl);
+  await enableAppRoleLogin(adminUrl);
+  await adminExec(adminUrl, `GRANT CONNECT ON DATABASE ${database} TO meeting_assistant_app`);
+
+  const ownerUrl = rewriteConnectionUrl(adminUrl, { database });
+  await applyMigrations(ownerUrl);
+  return {
+    container: {
+      stop: async () => {
+        try {
+          await adminExec(adminUrl, `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+        } catch {
+          // best effort; the CI service container is discarded after the job
+        }
+      },
+    },
+    ownerUrl,
+    appUrl: rewriteConnectionUrl(appConnectionUrl(adminUrl), { database }),
+  };
+}
+
+/**
+ * Fresh, empty database (app role bootstrapped, NO migrations applied) for
+ * upgrade-path tests. CI DATABASE_URL server when set, otherwise Testcontainers.
+ * ownerUrl is the superuser on that database.
+ */
+export async function startEmptyPostgres(): Promise<PostgresStack> {
+  const adminUrl = externalAdminUrl();
+  if (adminUrl) {
+    const database = `ma_upg_${process.pid}_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    await adminExec(adminUrl, `CREATE DATABASE ${database}`);
+    await bootstrapAppRole(adminUrl);
+    return {
+      container: {
+        stop: async () => {
+          try {
+            await adminExec(adminUrl, `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+          } catch {
+            // best effort; the CI service container is discarded after the job
+          }
+        },
+      },
+      ownerUrl: rewriteConnectionUrl(adminUrl, { database }),
+      appUrl: rewriteConnectionUrl(appConnectionUrl(adminUrl), { database }),
+    };
+  }
+
+  const container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const ownerUrl = container.getConnectionUri();
+  await bootstrapAppRole(ownerUrl);
+  return { container, ownerUrl, appUrl: appConnectionUrl(ownerUrl) };
+}
+
+/**
+ * Start Postgres - uses the CI DATABASE_URL server if available (fresh
+ * database per call), otherwise Testcontainers.
  */
 export async function startPostgres(): Promise<PostgresStack> {
-  // If DATABASE_URL is set (CI environment), use it directly
-  const ciDatabaseUrl = process.env.DATABASE_URL;
-  if (ciDatabaseUrl) {
-    // In CI, migrations are already applied by the workflow
-    return {
-      container: { stop: async () => { /* no-op in CI */ } },
-      ownerUrl: ciDatabaseUrl,
-      appUrl: ciDatabaseUrl, // In CI, we use the same URL
-    };
+  const adminUrl = externalAdminUrl();
+  if (adminUrl) {
+    return startExternalPostgres(adminUrl);
   }
 
   // Local development: use Testcontainers

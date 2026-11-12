@@ -54,7 +54,7 @@ describe('migrations', () => {
         SELECT ts.transcript_retention_days 
         FROM tenant_settings ts
         JOIN tenants t ON t.id = ts.tenant_id
-        WHERE t.slug = 'dev'
+        WHERE t.slug = 'lumen-vale'
       `);
 
       expect(result.rows.length).toBe(1);
@@ -108,6 +108,32 @@ describe('migrations', () => {
       `);
 
       expect(oldColumn.rows.length).toBe(0);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it('processing_dlq forces RLS with the canonical tenant_isolation policy', async () => {
+    const client = new pg.Client({ connectionString: ownerUrl });
+    await client.connect();
+
+    try {
+      const rel = await client.query(`
+        SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+        WHERE oid = 'public.processing_dlq'::regclass
+      `);
+      expect(rel.rows[0].relrowsecurity).toBe(true);
+      expect(rel.rows[0].relforcerowsecurity).toBe(true);
+
+      const policies = await client.query(`
+        SELECT policyname, roles::text[] AS roles, with_check FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'processing_dlq'
+        ORDER BY policyname
+      `);
+      // Legacy processing_dlq_tenant_policy is gone; only tenant_isolation remains.
+      expect(policies.rows.map((r) => r.policyname)).toEqual(['tenant_isolation']);
+      expect(policies.rows[0].roles).toContain('meeting_assistant_app');
+      expect(policies.rows[0].with_check).toMatch(/NULLIF\(current_setting\('app\.tenant_id'/);
     } finally {
       await client.end();
     }

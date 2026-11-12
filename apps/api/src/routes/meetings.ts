@@ -168,7 +168,7 @@ meetingsRouter.get('/:id', async (req, res) => {
  * The bot is created via Recall API and tracked by recall_bot_id.
  */
 meetingsRouter.post('/', async (req, res) => {
-  const tenantId = requireTenantId(req);
+  const tenantId = req.auth?.tenant.id;
   if (!tenantId) {
     unauthenticated(res);
     return;
@@ -219,8 +219,8 @@ meetingsRouter.post('/', async (req, res) => {
     // Update meeting with bot ID
     await withTenant(tenantId, (client) =>
       client.query(
-        `UPDATE meetings SET recall_bot_id = $1, status = 'joining', updated_at = NOW() WHERE id = $2`,
-        [bot.id, meeting.id]
+        `UPDATE meetings SET recall_bot_id = $1, status = 'joining', updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
+        [bot.id, meeting.id, tenantId]
       )
     );
 

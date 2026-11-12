@@ -1,14 +1,9 @@
-@import '@fontsource/geist-sans/400.css';
-@import '@fontsource/geist-sans/500.css';
-@import '@fontsource/geist-sans/600.css';
-@import '@fontsource/geist-sans/700.css';
-@import '@fontsource/geist-mono/400.css';
-@import '@fontsource/geist-mono/500.css';
 @import 'tailwindcss';
 
 :root {
-  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'Geist Mono', ui-monospace, monospace;
+  /* App typography tokens come from font-tokens.css (self-hosted). */
+  --font-sans: var(--font-app, ui-sans-serif, system-ui, sans-serif);
+  --font-mono: var(--font-app-mono, ui-monospace, monospace);
   --color-bg: #f4f4f1;
   --color-surface: #ffffff;
   --color-fg: #1c1c19;
