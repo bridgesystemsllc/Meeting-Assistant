@@ -8,12 +8,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import pg from 'pg';
 import {
-  insertConsentEvent,
-  updateMeetingConsentStatus,
   deleteStoredMeetingData,
   meetingHasStoredData,
   getConsentSettings,
-  type DbClient,
 } from './consent.js';
 import { handleConsentDenial } from './consent-handler.js';
 
@@ -403,7 +400,17 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
 
   describe('consent settings', () => {
     it('should retrieve default settings when none configured', async () => {
-      const settings = await getConsentSettings(pool, SYNTHETIC_TENANT_ID);
+      // Seed tenants already have a tenant_settings row. Use a tenant with no
+      // settings row so this assertion matches getConsentSettings' contract.
+      const isolatedTenantId = '00000000-0000-0000-0000-0000000000c5';
+      await pool.query(
+        `INSERT INTO tenants (id, name, slug)
+         VALUES ($1, 'Consent Settings Fixture', 'consent-settings-fixture')
+         ON CONFLICT (id) DO NOTHING`,
+        [isolatedTenantId]
+      );
+      await pool.query('DELETE FROM tenant_settings WHERE tenant_id = $1', [isolatedTenantId]);
+      const settings = await getConsentSettings(pool, isolatedTenantId);
       expect(settings).toBeNull();
     });
 
