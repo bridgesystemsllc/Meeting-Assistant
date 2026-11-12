@@ -7,6 +7,7 @@ import { LoginPage } from './routes/login';
 import { InvitePage } from './routes/invite';
 import { SeatsPage } from './routes/settings/seats';
 import { ActivityPage } from './routes/settings/activity';
+import { ConsentSettingsPage } from './routes/settings/consent';
 import { LandingPage } from './marketing/landing/LandingPage';
 import { PricingPage } from './marketing/landing/PricingPage';
 
@@ -23,6 +24,7 @@ function App() {
           <Route path="meetings/:id" element={<MeetingDetailPage />} />
           <Route path="settings/seats" element={<SeatsPage />} />
           <Route path="settings/activity" element={<ActivityPage />} />
+          <Route path="settings/consent" element={<ConsentSettingsPage />} />
         </Route>
       </Route>
     </Routes>

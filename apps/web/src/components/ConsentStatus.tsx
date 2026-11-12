@@ -21,17 +21,17 @@ interface ConsentStatusData {
 
 interface Props {
   meetingId: string;
-  tenantId: string;
+  tenantId?: string;
 }
 
 function getStatusColor(status: string): string {
   switch (status) {
     case 'granted':
-      return 'bg-green-100 text-green-800';
+      return 'bg-[color-mix(in_srgb,var(--color-success,#34C759)_16%,white)] text-[var(--color-fg)]';
     case 'denied':
-      return 'bg-red-100 text-red-800';
+      return 'bg-[color-mix(in_srgb,var(--color-danger)_16%,white)] text-[var(--color-fg)]';
     default:
-      return 'bg-yellow-100 text-yellow-800';
+      return 'bg-[var(--color-bg,#F5F5F7)] text-[var(--color-fg)]';
   }
 }
 
@@ -56,7 +56,7 @@ function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleString();
 }
 
-export function ConsentStatus({ meetingId, tenantId }: Props) {
+export function ConsentStatus({ meetingId }: Props) {
   const [data, setData] = useState<ConsentStatusData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,10 +64,8 @@ export function ConsentStatus({ meetingId, tenantId }: Props) {
   useEffect(() => {
     async function fetchConsentStatus() {
       try {
-        const response = await fetch(`/api/consent/meeting/${meetingId}`, {
-          headers: {
-            'x-tenant-id': tenantId,
-          },
+        const response = await fetch(`/api/v1/consent/meetings/${meetingId}`, {
+          credentials: 'include',
         });
         if (!response.ok) {
           if (response.status === 404) {
@@ -85,13 +83,13 @@ export function ConsentStatus({ meetingId, tenantId }: Props) {
       }
     }
 
-    fetchConsentStatus();
-  }, [meetingId, tenantId]);
+    void fetchConsentStatus();
+  }, [meetingId]);
 
   if (loading) {
     return (
-      <div className="animate-pulse bg-gray-100 rounded p-4">
-        Loading consent status...
+      <div className="rounded-2xl bg-[var(--color-bg,#F5F5F7)] p-4 text-sm text-[var(--color-muted)]">
+        Loading consent status…
       </div>
     );
   }

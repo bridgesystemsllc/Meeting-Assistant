@@ -160,17 +160,14 @@ export function MeetingDetailPage() {
 
       {/* Consent denied state */}
       {meeting.status === 'consent_denied' && (
-        <div className="space-y-4 mb-6">
-          <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-6">
-            <h3 className="text-orange-400 font-semibold mb-2">Recording Permission Denied</h3>
-            <p className="text-gray-400 text-sm">
+        <div className="mb-6 space-y-4">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface,white)] p-6">
+            <h3 className="mb-2 font-semibold text-[var(--color-fg)]">Recording permission denied</h3>
+            <p className="text-sm text-[var(--color-muted)]">
               Consent was denied for this meeting. No transcript, analysis, or email data has been stored.
             </p>
           </div>
-          <ConsentStatus 
-            meetingId={meeting.id} 
-            tenantId={meeting.tenant_id || localStorage.getItem('tenantId') || '00000000-0000-0000-0000-000000000001'} 
-          />
+          <ConsentStatus meetingId={meeting.id} />
         </div>
       )}
 
