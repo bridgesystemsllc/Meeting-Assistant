@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   RECALL_EVENT_TO_STATUS,
   MEETING_STATUSES,
+  CLAIMABLE_MEETING_STATUSES,
+  isMeetingClaimableForProcessing,
   detectPlatform,
   isAllowedMeetingUrl,
 } from './recall.js';
@@ -22,6 +24,24 @@ describe('RECALL_EVENT_TO_STATUS', () => {
     for (const status of mappedStatuses) {
       expect(MEETING_STATUSES).toContain(status);
     }
+  });
+});
+
+
+describe('CLAIMABLE_MEETING_STATUSES', () => {
+  it('never includes terminal or denied statuses', () => {
+    expect(CLAIMABLE_MEETING_STATUSES).not.toContain('consent_denied');
+    expect(CLAIMABLE_MEETING_STATUSES).not.toContain('completed');
+    expect(CLAIMABLE_MEETING_STATUSES).not.toContain('media_pending');
+    expect(CLAIMABLE_MEETING_STATUSES).not.toContain('dlq');
+  });
+
+  it('isMeetingClaimableForProcessing rejects a denied meeting', () => {
+    expect(isMeetingClaimableForProcessing('processing', 'denied')).toBe(false);
+    expect(isMeetingClaimableForProcessing('consent_denied', 'denied')).toBe(false);
+    expect(isMeetingClaimableForProcessing('consent_denied', 'pending')).toBe(false);
+    expect(isMeetingClaimableForProcessing('processing', 'pending')).toBe(true);
+    expect(isMeetingClaimableForProcessing('failed', null)).toBe(true);
   });
 });
 

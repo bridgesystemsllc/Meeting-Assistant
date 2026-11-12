@@ -42,6 +42,7 @@ export const TENANT_TABLES = [
   'memberships',
   'invites',
   'audit_events',
+  'consent_events',
 ] as const;
 
 export type TenantTable = (typeof TENANT_TABLES)[number];

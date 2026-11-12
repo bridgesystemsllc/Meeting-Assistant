@@ -14,6 +14,7 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { authRouter } from './routes/auth.js';
 import { meRouter } from './routes/me.js';
 import { tenantRouter } from './routes/tenant.js';
+import { consentRouter } from './routes/consent.js';
 import { errorHandler } from './middleware/errors.js';
 import { v1AuthGuard } from './middleware/auth.js';
 import { accessLogLine } from './lib/access-log.js';
@@ -46,6 +47,7 @@ export function createApp(): express.Express {
   app.use('/api/v1/me', meRouter);
   app.use('/api/v1/tenant', tenantRouter);
   app.use('/api/v1/meetings', meetingsRouter);
+  app.use('/api/v1/consent', consentRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Route not found' } });

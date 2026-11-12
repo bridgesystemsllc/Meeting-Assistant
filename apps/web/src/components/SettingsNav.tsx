@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 const links = [
   { to: '/settings/seats', label: 'Seats' },
   { to: '/settings/activity', label: 'Activity' },
+  { to: '/settings/consent', label: 'Consent' },
 ] as const;
 
 export function SettingsNav() {
