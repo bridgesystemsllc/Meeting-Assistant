@@ -144,7 +144,9 @@ describe('migrations upgrade path (main-era DB -> consent migrate:up)', () => {
           AND grantee = 'meeting_assistant_app'
         ORDER BY privilege_type`
     );
-    expect(grants.rows.map((r) => r.privilege_type)).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
+    expect(grants.rows.map((r) => r.privilege_type)).toEqual(['INSERT', 'SELECT']);
+    expect(grants.rows.map((r) => r.privilege_type)).not.toContain('UPDATE');
+    expect(grants.rows.map((r) => r.privilege_type)).not.toContain('DELETE');
 
     const meetingCols = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns

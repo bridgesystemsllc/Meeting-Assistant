@@ -98,4 +98,6 @@ CREATE POLICY tenant_isolation ON consent_events TO meeting_assistant_app
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON consent_events TO meeting_assistant_app;
+GRANT SELECT, INSERT ON consent_events TO meeting_assistant_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON consent_events FROM meeting_assistant_app;
+REVOKE ALL ON consent_events FROM PUBLIC;
