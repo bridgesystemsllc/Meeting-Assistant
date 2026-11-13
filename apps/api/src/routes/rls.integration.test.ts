@@ -231,6 +231,24 @@ describe('RLS tenant isolation', () => {
     expect(noTenant).toBeNull();
   });
 
+  it('lookup_tenant_name is tenant-scoped', async () => {
+    const sameTenant = await withTenant(ACME, (client) =>
+      client.query<{ name: string | null }>('SELECT lookup_tenant_name($1) AS name', [ACME])
+    );
+    expect(sameTenant.rows[0].name).toBe('Acme Notes');
+
+    const crossTenant = await withTenant(LUMEN, (client) =>
+      client.query<{ name: string | null }>('SELECT lookup_tenant_name($1) AS name', [ACME])
+    );
+    expect(crossTenant.rows[0].name).toBeNull();
+
+    const noTenant = await getAppPool().query<{ name: string | null }>(
+      'SELECT lookup_tenant_name($1) AS name',
+      [ACME]
+    );
+    expect(noTenant.rows[0].name).toBeNull();
+  });
+
   it('clears app.tenant_id on the pooled connection after commit', async () => {
     await withTenant(ACME, async (client) => {
       const inside = await client.query("SELECT current_setting('app.tenant_id', true) AS t");

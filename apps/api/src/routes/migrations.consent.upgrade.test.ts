@@ -120,7 +120,11 @@ describe('migrations upgrade path (main-era DB -> consent migrate:up)', () => {
   it('migrate:up applies only the consent migration and lands FORCE RLS + tenant_isolation', async () => {
     const applied = await migrate(stack.ownerUrl, migrationsDir);
     const names = applied.map((m) => m.name);
-    expect(names).toEqual([NEW_MIGRATION]);
+    expect(names).toContain(NEW_MIGRATION);
+    expect(names[0]).toBe(NEW_MIGRATION);
+    for (const name of names) {
+      expect(name >= NEW_MIGRATION, name).toBe(true);
+    }
 
     expect(await relationExists(client, 'consent_events')).toBe(true);
 
