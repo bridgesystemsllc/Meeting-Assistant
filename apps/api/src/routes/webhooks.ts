@@ -221,11 +221,15 @@ async function applyEvent(
       );
       logger.info({ meetingId, status }, 'Meeting status updated');
       if (code === 'in_call_recording') {
-        await announceInCallRecording(client, recallService, {
-          meetingId,
-          tenantId,
-          recallBotId,
-        });
+        try {
+          await announceInCallRecording(client, recallService, {
+            meetingId,
+            tenantId,
+            recallBotId,
+          });
+        } catch (err) {
+          logger.warn({ err, meetingId }, 'In-call consent announcement failed');
+        }
       }
       return { enqueue: false };
     }
@@ -254,11 +258,15 @@ async function applyEvent(
           "UPDATE meetings SET status = 'recording', updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
           [meetingId, tenantId]
         );
-        await announceInCallRecording(client, recallService, {
-          meetingId,
-          tenantId,
-          recallBotId,
-        });
+        try {
+          await announceInCallRecording(client, recallService, {
+            meetingId,
+            tenantId,
+            recallBotId,
+          });
+        } catch (err) {
+          logger.warn({ err, meetingId }, 'In-call consent announcement failed');
+        }
         return { enqueue: false };
       }
       logger.debug({ event }, 'Unhandled webhook event type');

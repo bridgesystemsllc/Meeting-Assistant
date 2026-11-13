@@ -235,11 +235,16 @@ export async function announceInCallRecording(
   const botName = params.botName?.trim() || getBotDisplayName(settings);
   const message = buildInCallAnnouncement(settings, { botName, tenantName });
 
-  const posted = await recallClient.sendChatMessage(recallBotId, message);
-  if (posted) {
-    logger.info({ meetingId, tenantId, recallBotId }, 'In-call consent announcement posted');
-  } else {
-    logger.warn({ meetingId, tenantId, recallBotId }, 'In-call consent announcement failed');
+  try {
+    const posted = await recallClient.sendChatMessage(recallBotId, message);
+    if (posted) {
+      logger.info({ meetingId, tenantId, recallBotId }, 'In-call consent announcement posted');
+    } else {
+      logger.warn({ meetingId, tenantId, recallBotId }, 'In-call consent announcement failed');
+    }
+    return { posted, message };
+  } catch (err) {
+    logger.warn({ err, meetingId, tenantId, recallBotId }, 'In-call consent announcement failed');
+    return { posted: false, message };
   }
-  return { posted, message };
 }

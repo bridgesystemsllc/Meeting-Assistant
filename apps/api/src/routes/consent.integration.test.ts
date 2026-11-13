@@ -249,6 +249,52 @@ describe('consent P0 integration', () => {
     expect(message).toContain('Acme Notetaker is recording and transcribing for Acme Notes');
   });
 
+  it('item 5: a failed chat post does not fail the in_call_recording webhook', async () => {
+    vi.mocked(recallService.sendChatMessage).mockRejectedValueOnce(new Error('RECALL_API_KEY not configured'));
+    const owner = await login('owner@example.com', 'Avery Owner');
+    await owner.put('/api/v1/consent/settings').send({
+      botDisplayName: 'Acme Notetaker',
+    });
+    const created = await owner.post('/api/v1/meetings').send({
+      meeting_url: 'https://zoom.us/j/555111227',
+      title: 'Announcement failure meeting',
+    });
+    expect(created.status).toBe(201);
+    const meetingId = created.body.meeting.id as string;
+    const botId = created.body.meeting.recall_bot_id as string;
+
+    const payload = {
+      event: 'bot.status_change',
+      data: {
+        bot: {
+          id: botId,
+          status_changes: [{ code: 'in_call_recording', created_at: new Date().toISOString() }],
+          metadata: {
+            internal_meeting_id: meetingId,
+            tenant_id: ACME,
+          },
+        },
+      },
+    };
+    const body = JSON.stringify(payload);
+    const eventId = `evt-announce-fail-${crypto.randomUUID()}`;
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = createSignature(body, timestamp, eventId, WEBHOOK_SECRET);
+
+    const hook = await request(origin())
+      .post('/webhooks/recall')
+      .set({
+        'content-type': 'application/json',
+        'svix-id': eventId,
+        'svix-timestamp': timestamp,
+        'svix-signature': `v1,${signature}`,
+      })
+      .send(body);
+
+    expect(hook.status).toBe(200);
+    expect(hook.body.received).toBe(true);
+  });
+
   it('item 6: POST /meetings queues the pre-join notice to attendees when notify_attendees is on', async () => {
     const owner = await login('owner@example.com', 'Avery Owner');
     await owner.put('/api/v1/consent/settings').send({
