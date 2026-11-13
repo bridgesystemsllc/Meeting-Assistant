@@ -12,6 +12,9 @@ import {
   mapRecallEventToConsentEvent,
   isConsentDenialEvent,
   getDenialReason,
+  buildInCallAnnouncement,
+  buildPreJoinNotice,
+  BOT_NAME_NOT_DISCLOSING,
   type ConsentSettings,
 } from './consent.js';
 
@@ -73,7 +76,8 @@ describe('Consent Service', () => {
 
     it('returns default notice when null', () => {
       const notice = getInCallNotice(null);
-      expect(notice).toContain('Recording in progress');
+      expect(notice).toContain('is recording and transcribing for');
+      expect(notice).toContain("Type 'stop'");
     });
   });
 
@@ -147,13 +151,15 @@ describe('Consent Service', () => {
       expect(validateBotName('Meeting Recorder')).toEqual({ valid: true });
     });
 
-    it('accepts names with "recording"', () => {
-      expect(validateBotName('Recording Bot')).toEqual({ valid: true });
+    it('rejects names that only contain "recording" without "Recorder"', () => {
+      const result = validateBotName('Recording Bot');
+      expect(result.valid).toBe(false);
+      expect(result.code).toBe(BOT_NAME_NOT_DISCLOSING);
     });
 
-    it('accepts names with "transcrip"', () => {
-      expect(validateBotName('Transcription Bot')).toEqual({ valid: true });
-      expect(validateBotName('Transcript Helper')).toEqual({ valid: true });
+    it('rejects names that only contain "transcript" without the §5.4 terms', () => {
+      expect(validateBotName('Transcription Bot').valid).toBe(false);
+      expect(validateBotName('Transcript Helper').code).toBe(BOT_NAME_NOT_DISCLOSING);
     });
 
     it('accepts names with "ai notes"', () => {
@@ -163,7 +169,8 @@ describe('Consent Service', () => {
     it('rejects names without disclosure keywords', () => {
       const result = validateBotName('Company Bot');
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('disclosure keyword');
+      expect(result.code).toBe(BOT_NAME_NOT_DISCLOSING);
+      expect(result.error).toMatch(/Notetaker|Recorder|AI notes/);
     });
 
     it('rejects generic names', () => {
@@ -220,4 +227,67 @@ describe('Consent Service', () => {
       expect(getDenialReason('recording_permission_denied')).toContain('permission');
     });
   });
+
+  describe('getBotDisplayName fallback', () => {
+    it('uses env BOT_NAME only when the tenant has no display name', () => {
+      const env = { BOT_NAME: 'Env Recorder' };
+      expect(getBotDisplayName(null, env)).toBe('Env Recorder');
+      const settings: ConsentSettings = {
+        botDisplayName: 'Tenant Notetaker',
+        preJoinNotice: null,
+        inCallNotice: null,
+        stopKeywords: [],
+      };
+      expect(getBotDisplayName(settings, env)).toBe('Tenant Notetaker');
+    });
+
+    it('uses the built-in default when env BOT_NAME is empty', () => {
+      expect(getBotDisplayName(null, { BOT_NAME: '  ' })).toBe(
+        'Meeting Notetaker (recording transcript)'
+      );
+    });
+  });
+
+  describe('buildInCallAnnouncement', () => {
+    it('uses the §5.4 disclosure sentence with bot and tenant names', () => {
+      const message = buildInCallAnnouncement(null, {
+        botName: 'Acme Notetaker',
+        tenantName: 'Acme Notes',
+      });
+      expect(message).toBe(
+        "Acme Notetaker is recording and transcribing for Acme Notes. Type 'stop' or ask the host to remove me."
+      );
+    });
+
+    it('keeps the disclosure sentence when a custom notice is set', () => {
+      const settings: ConsentSettings = {
+        botDisplayName: null,
+        preJoinNotice: null,
+        inCallNotice: 'Please stay muted.',
+        stopKeywords: [],
+      };
+      const message = buildInCallAnnouncement(settings, {
+        botName: 'Acme Notetaker',
+        tenantName: 'Acme Notes',
+      });
+      expect(message.startsWith('Acme Notetaker is recording and transcribing for Acme Notes.')).toBe(
+        true
+      );
+      expect(message).toContain('Please stay muted.');
+    });
+  });
+
+  describe('buildPreJoinNotice', () => {
+    it('names the tenant, discloses recording, links privacy, and explains how to object', () => {
+      const notice = buildPreJoinNotice(null, {
+        tenantName: 'Acme Notes',
+        privacyUrl: 'http://localhost:5173/privacy',
+      });
+      expect(notice).toContain('Acme Notes');
+      expect(notice.toLowerCase()).toMatch(/record(ed| and transcribe)/);
+      expect(notice).toContain('http://localhost:5173/privacy');
+      expect(notice.toLowerCase()).toMatch(/consent|object|remove/);
+    });
+  });
+
 });

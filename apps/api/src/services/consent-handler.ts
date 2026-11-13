@@ -14,6 +14,10 @@ import {
   updateMeetingConsentStatus,
   deleteStoredMeetingData,
   getDenialReason,
+  getConsentSettings,
+  getBotDisplayName,
+  buildInCallAnnouncement,
+  lookupTenantName,
   type DbClient,
 } from './consent.js';
 
@@ -21,6 +25,7 @@ export interface RecallApiClient {
   leaveMeeting(botId: string): Promise<void>;
   deleteRecording(botId: string): Promise<void>;
   deleteTranscript(botId: string): Promise<void>;
+  sendChatMessage?(botId: string, message: string): Promise<boolean>;
 }
 
 export interface ConsentDenialResult {
@@ -74,7 +79,7 @@ export async function handleConsentDenial(
   
   // Step 2: Delete any locally stored data (transcript, analysis, email)
   try {
-    await deleteStoredMeetingData(db, meetingId);
+    await deleteStoredMeetingData(db, tenantId, meetingId);
   } catch (err) {
     localCleanupSuccess = false;
     logger.error(
@@ -86,7 +91,7 @@ export async function handleConsentDenial(
   // Step 3: Update meeting status to denied
   try {
     const denialReason = getDenialReason(eventType);
-    await updateMeetingConsentStatus(db, meetingId, 'denied', denialReason);
+    await updateMeetingConsentStatus(db, tenantId, meetingId, 'denied', denialReason);
   } catch (err) {
     logger.error(
       { err, meetingId },
@@ -199,4 +204,42 @@ export async function handleChatMessage(
   });
   
   return { triggered: true, result };
+}
+
+/**
+ * Auto-post the in-call consent announcement when the bot enters
+ * in_call_recording. Uses Recall sendChatMessage.
+ */
+export async function announceInCallRecording(
+  db: DbClient,
+  recallClient: Pick<RecallApiClient, 'sendChatMessage'>,
+  params: {
+    meetingId: string;
+    tenantId: string;
+    recallBotId: string;
+    botName?: string;
+    tenantName?: string;
+  }
+): Promise<{ posted: boolean; message: string | null }> {
+  const { meetingId, tenantId, recallBotId } = params;
+  if (!recallClient.sendChatMessage) {
+    logger.warn({ meetingId }, 'Recall client cannot send chat messages');
+    return { posted: false, message: null };
+  }
+
+  const settings = await getConsentSettings(db, tenantId);
+  const tenantName =
+    params.tenantName?.trim() ||
+    (await lookupTenantName(db, tenantId)) ||
+    'the host';
+  const botName = params.botName?.trim() || getBotDisplayName(settings);
+  const message = buildInCallAnnouncement(settings, { botName, tenantName });
+
+  const posted = await recallClient.sendChatMessage(recallBotId, message);
+  if (posted) {
+    logger.info({ meetingId, tenantId, recallBotId }, 'In-call consent announcement posted');
+  } else {
+    logger.warn({ meetingId, tenantId, recallBotId }, 'In-call consent announcement failed');
+  }
+  return { posted, message };
 }

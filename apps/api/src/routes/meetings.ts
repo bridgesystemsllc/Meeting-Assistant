@@ -20,6 +20,13 @@ import { withTenant } from '../lib/db.js';
 import { logger } from '../lib/logger.js';
 import { badRequest, forbidden, notFound, sendError, unauthenticated } from '../lib/http-error.js';
 import { requireActiveSeat } from '../lib/seats.js';
+import {
+  BOT_NAME_NOT_DISCLOSING,
+  getBotDisplayName,
+  getConsentSettings,
+  queuePreJoinNotices,
+  validateBotName,
+} from '../services/consent.js';
 
 export const meetingsRouter = Router();
 
@@ -190,9 +197,19 @@ meetingsRouter.post('/', async (req, res) => {
   try {
     // Import recall service dynamically to support mocking in tests
     const { recallService } = await import('../services/recall.js');
-    
-    // Create meeting record first
-    const meeting = await withTenant(tenantId, async (client) => {
+
+    const tenantName = req.auth?.tenant.name || 'the host';
+    const hostEmail = req.auth?.user.email;
+    const attendeeEmails = req.body?.attendeeEmails ?? req.body?.attendee_emails;
+
+    const prepared = await withTenant(tenantId, async (client) => {
+      const settings = await getConsentSettings(client, tenantId);
+      const botName = getBotDisplayName(settings);
+      const validation = validateBotName(botName);
+      if (!validation.valid) {
+        return { ok: false as const, error: validation };
+      }
+
       const result = await client.query<{
         id: string;
         title: string;
@@ -204,11 +221,19 @@ meetingsRouter.post('/', async (req, res) => {
          RETURNING id, title, platform, status`,
         [tenantId, userId, title || 'Untitled Meeting', platform || detectPlatform(meeting_url), meeting_url]
       );
-      return result.rows[0];
+      return { ok: true as const, meeting: result.rows[0], botName, settings };
     });
 
-    // Create and send Recall bot
-    const botName = process.env.BOT_NAME || 'Meeting Assistant';
+    if (!prepared.ok) {
+      badRequest(
+        res,
+        prepared.error.code || BOT_NAME_NOT_DISCLOSING,
+        prepared.error.error || 'Bot name must disclose recording'
+      );
+      return;
+    }
+
+    const { meeting, botName, settings } = prepared;
     const bot = await recallService.createBot({
       meetingUrl: meeting_url,
       botName,
@@ -216,15 +241,22 @@ meetingsRouter.post('/', async (req, res) => {
       tenantId,
     });
 
-    // Update meeting with bot ID
-    await withTenant(tenantId, (client) =>
-      client.query(
+    const notice = await withTenant(tenantId, async (client) => {
+      await client.query(
         `UPDATE meetings SET recall_bot_id = $1, status = 'joining', updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
         [bot.id, meeting.id, tenantId]
-      )
-    );
+      );
+      return queuePreJoinNotices(client, {
+        tenantId,
+        meetingId: meeting.id,
+        tenantName,
+        hostEmail,
+        attendeeEmails,
+        settings,
+      });
+    });
 
-    logger.info({ meetingId: meeting.id, botId: bot.id }, 'Meeting created with bot dispatched');
+    logger.info({ meetingId: meeting.id, botId: bot.id, botName }, 'Meeting created with bot dispatched');
 
     res.status(201).json({
       meeting: {
@@ -233,7 +265,11 @@ meetingsRouter.post('/', async (req, res) => {
         platform: meeting.platform,
         status: 'joining',
         recall_bot_id: bot.id,
+        bot_name: botName,
       },
+      preJoinNotice: notice.notice,
+      noticeRecipients: notice.recipients,
+      noticeQueued: notice.queued,
     });
   } catch (err) {
     logger.error({ err }, 'Failed to create meeting');

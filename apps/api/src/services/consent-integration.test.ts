@@ -11,6 +11,8 @@ import {
   deleteStoredMeetingData,
   meetingHasStoredData,
   getConsentSettings,
+  updateMeetingConsentStatus,
+  getMeetingForConsent,
 } from './consent.js';
 import { handleConsentDenial } from './consent-handler.js';
 
@@ -53,6 +55,9 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
         pre_join_notice TEXT,
         in_call_notice TEXT,
         stop_keywords TEXT[] DEFAULT ARRAY['stop recording', 'stop transcription', 'leave meeting'],
+        store_audio BOOLEAN NOT NULL DEFAULT false,
+        consent_policy TEXT NOT NULL DEFAULT 'all_party_notice',
+        notify_attendees BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
@@ -178,19 +183,19 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
       await createTestData(meetingId);
 
       // Verify data exists
-      const beforeData = await meetingHasStoredData(pool, meetingId);
+      const beforeData = await meetingHasStoredData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(beforeData.hasTranscript).toBe(true);
       expect(beforeData.hasAnalysis).toBe(true);
       expect(beforeData.hasEmail).toBe(true);
 
       // Delete data
-      const deleted = await deleteStoredMeetingData(pool, meetingId);
+      const deleted = await deleteStoredMeetingData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(deleted.deletedTranscripts).toBe(1);
       expect(deleted.deletedAnalysis).toBe(1);
       expect(deleted.deletedEmails).toBe(1);
 
       // Verify data is gone
-      const afterData = await meetingHasStoredData(pool, meetingId);
+      const afterData = await meetingHasStoredData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(afterData.hasTranscript).toBe(false);
       expect(afterData.hasAnalysis).toBe(false);
       expect(afterData.hasEmail).toBe(false);
@@ -199,7 +204,7 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
     it('should handle meeting with no stored data', async () => {
       const meetingId = await createTestMeeting('no-data');
 
-      const deleted = await deleteStoredMeetingData(pool, meetingId);
+      const deleted = await deleteStoredMeetingData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(deleted.deletedTranscripts).toBe(0);
       expect(deleted.deletedAnalysis).toBe(0);
       expect(deleted.deletedEmails).toBe(0);
@@ -237,7 +242,7 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
       expect(recallClient.deleteTranscript).toHaveBeenCalledWith('bot-denial-test');
 
       // Verify all local data is deleted
-      const storedData = await meetingHasStoredData(pool, meetingId);
+      const storedData = await meetingHasStoredData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(storedData.hasTranscript).toBe(false);
       expect(storedData.hasAnalysis).toBe(false);
       expect(storedData.hasEmail).toBe(false);
@@ -347,7 +352,7 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
       expect(recallClient.leaveMeeting).toHaveBeenCalled();
 
       // Data should still be zero (can't delete twice)
-      const storedData = await meetingHasStoredData(pool, meetingId);
+      const storedData = await meetingHasStoredData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(storedData.hasTranscript).toBe(false);
       expect(storedData.hasAnalysis).toBe(false);
       expect(storedData.hasEmail).toBe(false);
@@ -384,7 +389,7 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
       );
 
       // Data should be deleted (regardless of race conditions)
-      const storedData = await meetingHasStoredData(pool, meetingId);
+      const storedData = await meetingHasStoredData(pool, SYNTHETIC_TENANT_ID, meetingId);
       expect(storedData.hasTranscript).toBe(false);
       expect(storedData.hasAnalysis).toBe(false);
       expect(storedData.hasEmail).toBe(false);
@@ -427,6 +432,38 @@ describe.skipIf(!hasPostgres)('Consent Denial Integration (Postgres)', () => {
       expect(settings).not.toBeNull();
       expect(settings?.botDisplayName).toBe('Custom Notetaker');
       expect(settings?.preJoinNotice).toBe('Custom notice');
+    });
+  });
+
+  describe('tenant-scoped consent helpers (item 8)', () => {
+    it('does not update or read a meeting when tenant_id does not match', async () => {
+      const meetingId = await createTestMeeting('scope-test');
+      const otherTenant = '00000000-0000-0000-0000-000000000099';
+
+      await updateMeetingConsentStatus(pool, otherTenant, meetingId, 'denied', 'wrong tenant');
+      const unchanged = await pool.query(
+        'SELECT consent_status, consent_denied_reason FROM meetings WHERE id = $1',
+        [meetingId]
+      );
+      expect(unchanged.rows[0].consent_status).toBe('pending');
+      expect(unchanged.rows[0].consent_denied_reason).toBeNull();
+
+      const missed = await getMeetingForConsent(pool, otherTenant, meetingId);
+      expect(missed).toBeNull();
+
+      const found = await getMeetingForConsent(pool, SYNTHETIC_TENANT_ID, meetingId);
+      expect(found?.tenantId).toBe(SYNTHETIC_TENANT_ID);
+    });
+
+    it('rejects store_audio = true at the database', async () => {
+      await expect(
+        pool.query(
+          `INSERT INTO tenant_settings (tenant_id, store_audio)
+           VALUES ($1, true)
+           ON CONFLICT (tenant_id) DO UPDATE SET store_audio = true`,
+          [SYNTHETIC_TENANT_ID]
+        )
+      ).rejects.toThrow(/store_audio|check/i);
     });
   });
 });

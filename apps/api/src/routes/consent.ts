@@ -13,13 +13,18 @@ import {
   parseUuidParam,
   unauthenticated,
 } from '../lib/http-error.js';
+import { requireRole } from '../middleware/auth.js';
 import { requireActiveSeat } from '../lib/seats.js';
 import {
+  BOT_NAME_NOT_DISCLOSING,
   getBotDisplayName,
+  getConsentPolicy,
   getConsentSettings,
   getInCallNotice,
+  getNotifyAttendees,
   getPreJoinNotice,
   getStopKeywords,
+  getStoreAudio,
   validateBotName,
 } from '../services/consent.js';
 
@@ -41,6 +46,9 @@ consentRouter.get('/settings', async (req, res, next) => {
       preJoinNotice: getPreJoinNotice(settings),
       inCallNotice: getInCallNotice(settings),
       stopKeywords: getStopKeywords(settings),
+      storeAudio: getStoreAudio(settings),
+      consentPolicy: getConsentPolicy(settings),
+      notifyAttendees: getNotifyAttendees(settings),
       hasCustomSettings: settings !== null,
     });
   } catch (err) {
@@ -49,7 +57,7 @@ consentRouter.get('/settings', async (req, res, next) => {
   }
 });
 
-consentRouter.put('/settings', async (req, res, next) => {
+consentRouter.put('/settings', requireRole('admin'), async (req, res, next) => {
   try {
     const tenantId = req.auth?.tenant.id;
     if (!tenantId) {
@@ -57,7 +65,17 @@ consentRouter.put('/settings', async (req, res, next) => {
       return;
     }
 
-    const { botDisplayName, preJoinNotice, inCallNotice, stopKeywords } = req.body ?? {};
+    const { botDisplayName, preJoinNotice, inCallNotice, stopKeywords, storeAudio, consentPolicy, notifyAttendees } =
+      req.body ?? {};
+
+    if (storeAudio === true) {
+      badRequest(res, 'STORE_AUDIO_NOT_EDITABLE', 'store_audio is fixed false in v1 and cannot be enabled');
+      return;
+    }
+    if (consentPolicy != null && consentPolicy !== 'all_party_notice') {
+      badRequest(res, 'CONSENT_POLICY_NOT_EDITABLE', "consent_policy is fixed to 'all_party_notice' in v1");
+      return;
+    }
 
     if (botDisplayName) {
       if (typeof botDisplayName !== 'string') {
@@ -66,7 +84,7 @@ consentRouter.put('/settings', async (req, res, next) => {
       }
       const validation = validateBotName(botDisplayName);
       if (!validation.valid) {
-        badRequest(res, 'VALIDATION_ERROR', validation.error || 'Invalid bot name');
+        badRequest(res, validation.code || BOT_NAME_NOT_DISCLOSING, validation.error || 'Invalid bot name');
         return;
       }
     }
@@ -82,14 +100,15 @@ consentRouter.put('/settings', async (req, res, next) => {
 
     await withTenant(tenantId, (client) =>
       client.query(
-        `INSERT INTO tenant_settings (tenant_id, bot_display_name, pre_join_notice, in_call_notice, stop_keywords)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO tenant_settings (tenant_id, bot_display_name, pre_join_notice, in_call_notice, stop_keywords, notify_attendees)
+         VALUES ($1, $2, $3, $4, $5, COALESCE($6, true))
          ON CONFLICT (tenant_id)
          DO UPDATE SET
            bot_display_name = COALESCE($2, tenant_settings.bot_display_name),
            pre_join_notice = COALESCE($3, tenant_settings.pre_join_notice),
            in_call_notice = COALESCE($4, tenant_settings.in_call_notice),
            stop_keywords = COALESCE($5, tenant_settings.stop_keywords),
+           notify_attendees = COALESCE($6, tenant_settings.notify_attendees),
            updated_at = NOW()`,
         [
           tenantId,
@@ -97,6 +116,7 @@ consentRouter.put('/settings', async (req, res, next) => {
           typeof preJoinNotice === 'string' ? preJoinNotice : null,
           typeof inCallNotice === 'string' ? inCallNotice : null,
           Array.isArray(stopKeywords) ? stopKeywords : null,
+          typeof notifyAttendees === 'boolean' ? notifyAttendees : null,
         ]
       )
     );
