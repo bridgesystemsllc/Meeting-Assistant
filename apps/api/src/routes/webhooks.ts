@@ -31,7 +31,7 @@ import {
   getStopKeywords,
   mapRecallEventToConsentEvent,
 } from '../services/consent.js';
-import { handleChatMessage, handleConsentDenial } from '../services/consent-handler.js';
+import { announceInCallRecording, handleChatMessage, handleConsentDenial } from '../services/consent-handler.js';
 import { recallService } from '../services/recall.js';
 import * as webhookVerify from '../services/webhook-verify.js';
 import type { WebhookVerifyHeaders } from '../services/webhook-verify.js';
@@ -220,6 +220,17 @@ async function applyEvent(
         [status, meetingId, tenantId]
       );
       logger.info({ meetingId, status }, 'Meeting status updated');
+      if (code === 'in_call_recording') {
+        try {
+          await announceInCallRecording(client, recallService, {
+            meetingId,
+            tenantId,
+            recallBotId,
+          });
+        } catch (err) {
+          logger.warn({ err, meetingId }, 'In-call consent announcement failed');
+        }
+      }
       return { enqueue: false };
     }
     case 'bot.done':
@@ -239,9 +250,28 @@ async function applyEvent(
       );
       return { enqueue: true };
     }
-    default:
+    default: {
+      const recordingEvent =
+        event === 'bot.in_call_recording' || event === 'in_call_recording';
+      if (recordingEvent) {
+        await client.query(
+          "UPDATE meetings SET status = 'recording', updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+          [meetingId, tenantId]
+        );
+        try {
+          await announceInCallRecording(client, recallService, {
+            meetingId,
+            tenantId,
+            recallBotId,
+          });
+        } catch (err) {
+          logger.warn({ err, meetingId }, 'In-call consent announcement failed');
+        }
+        return { enqueue: false };
+      }
       logger.debug({ event }, 'Unhandled webhook event type');
       return { enqueue: false };
+    }
   }
 }
 
